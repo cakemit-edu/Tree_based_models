@@ -1,0 +1,408 @@
+---
+title:  Tree based modeling, a Tidy approach
+author: Claudia Tanaka (claudia.tanaka@al.infnet.edu.br)
+date:   "`r format(Sys.time(), '%d/%m/%Y')`"
+
+output:
+  bookdown::html_document2:
+    toc: yes
+    toc_float: yes
+    fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( message=FALSE, warning=FALSE )
+options(scipen=999) # "Desliga" notação científica. 000 para ligar.
+
+# PACOTES 
+library(tidyverse)
+library(tidymodels)
+
+# PRETTY DOC
+library(gt)
+library(patchwork)
+
+theme_set(theme_light(base_size=9))
+theme_update(
+  panel.grid.minor = element_blank(),
+  panel.grid.major = element_line(colour = "gray92", size = 0.1),
+  plot.title = element_text(size = 12, colour = "gray30", face = "bold"),
+  plot.subtitle = element_text(face = 'italic', colour = "gray50", size = 10),
+  plot.caption = element_text(colour = "gray50", hjust=0, size = 8),
+  legend.title = element_blank(),
+)
+```
+
+\
+
+# The setup
+
+```{r}
+print(sessionInfo(), locale=FALSE)
+```
+
+\
+
+# Preprocessing
+
+**DATA DICTIONARY:**
+
+-   [**Survived**]{.underline} Survival (0 = No, 1 = Yes )
+
+-   [**Pclass**]{.underline} Ticket class (1 = 1st, 2 = 2nd, 3 = 3rd )
+
+-   [**Sex**]{.underline} Sex
+
+-   [**Age**]{.underline} Age in years
+
+-   [**SibSp**]{.underline} \# of siblings / spouses aboard the Titanic
+
+-   [**Parch**]{.underline} \# of parents / children aboard the Titanic
+
+-   [**Ticket**]{.underline} Ticket number
+
+-   [**Fare**]{.underline} Passenger fare
+
+-   [**Cabin**]{.underline} Cabin number
+
+-   [**Embarked**]{.underline} Port of (Embarkation C = Cherbourg, Q = Queenstown, S = Southampton)
+
+\
+**NOTES:**
+
+**Pclass**: A proxy for socio-economic status (SES):\
+
+1st = Upper\
+2nd = Middle\
+3rd = Lower\
+
+**Age**: Age is fractional if less than 1. If the age is estimated, is it in the form of xx.5
+
+**SibSp**: The dataset defines family relations in this way...\
+
+Sibling = brother, sister, stepbrother, stepsister\
+Spouse = husband, wife (mistresses and fiancés were ignored)\
+
+
+**Parch**: The dataset defines family relations in this way...\
+
+Parent = mother, father\
+Child = daughter, son, stepdaughter, stepson\
+
+Some children travelled only with a nanny, therefore parch=0 for them.
+
+
+```{r}
+df0 <- read.csv("_datasets/train.csv") |> as_tibble() |> 
+  
+  na.omit() |> # excludes 177 observations missing Age
+  mutate(AgeGroup = if_else(Age < 18, "children", "adult")) |> 
+  
+  rename(ParCh=Parch) |> 
+  
+  mutate(across(where(is.character), ~if_else(.x=="", NA, .x)),
+         across(where(is.character), as.factor)) |> 
+  
+  mutate(Survived = as.factor(as.logical(Survived))) |> 
+  
+  select(-Name, -Ticket, -Cabin)
+```
+
+
+```{r}
+str(df0)
+```
+
+
+\
+
+```{r}
+summarytools::dfSummary(df0, style="multiline", 
+                        plain.ascii=F, graph.col=F, valid.col=F) |> 
+  knitr::kable()
+```
+
+\
+
+# EDA
+
+```{r}
+
+```
+
+
+\
+
+# Splitting
+
+Splitting the data into training and testing sets is a critical step in the modeling process. The training set is used to fit the model and the test set is used to estimate the model's performance on new data. 
+
+The `initial_split()` function from the `rsample` package is used to create a single split of the data. The `prop` argument specifies the proportion of the data to be allocated to the training set. The `strata` argument is used to specify a variable that should be used to stratify the data. This is useful when the outcome variable is imbalanced. ([Kuhn & Johnson, 2013](#kuhn2023))
+
+```{r}
+set.seed(1001)
+df1_split <- rsample::initial_split(df0, prop=.75, strata=Survived)
+df1_split
+```
+
+The printed information denotes the amount of data in the training set ($n=571$), the amount in the test set ( $n=143$ ), and the size of the original pool of samples ($n=714$).
+
+\
+
+```{r}
+df1_train <- training(df1_split)
+df1_test <- testing(df1_split)
+
+str(df1_train)
+```
+
+These objects are data frames with the same columns as the original data but only the appropriate rows for each set.
+
+Simple random sampling is appropriate in many cases but there are exceptions. When there is a dramatic class imbalance in classification problems, one class occurs much less frequently than another. Using a simple random sample may haphazardly allocate these infrequent samples disproportionately into the training or test set. To avoid this, stratified sampling can be used. The training/test split is conducted separately within each class and then these subsamples are combined into the overall training and test set. 
+
+
+```{r}
+df1_train |> 
+  summarise(n=n(), .by=Survived) |>
+  mutate(prop = n/sum(n))
+```
+
+
+For regression problems, the outcome data can be artificially binned into quartiles and then stratified sampling can be conducted four separate times. This is an effective method for keeping the distributions of the outcome similar between the training and test set.
+
+\
+
+# Resampling
+
+Chapter 3.4 "[Resampling]{.underline}" from *Feature Engineering and Selection* ([Kuhn & Johnson, 2019](#kuhn2020))\
+Chapter 10 "[Resampling for Evaluating Performance]{.underline}" from *Tidy Modeling with R* ([Kuhn & Johnson, 2023](#kuhn2023))
+
+\
+
+Resampling is conducted only on the training set, as you see in Figure \@ref(fig:resampling). 
+
+Resampling methods generate different versions of our training set that can be used to simulate how well models would perform on new data. A resampling scheme generates a subset of the data to be used for modeling and another that is used for measuring performance. Here, we will refer to the former as the “analysis set” and the latter as the “assessment set”. They are roughly analogous to the training and test sets. A graphic of an example data hierarchy with three resamples is shown in Figure \@ref(fig:resampling).
+
+```{r resampling, echo=FALSE, fig.cap="*A diagram of typical data usage with B resamples of the training data*", out.width=600}
+knitr::include_graphics(".imgs/01_resampling.png")
+```
+
+\
+
+Before proceeding, we should be aware of what is being resampled. The *independent experimental* unit is the unit of data that is as statistically independent as possible from the other data. For example, for the Titanic data, it would be reasonable to consider each passenger to be independent of the other passengers. Since passengers are contained in rows of the data, each row is allocated to either the analysis or assessment sets. However, consider a situation where a company’s customer is the independent unit but the data set contains multiple rows per customer. In this case, each customer would be allotted to the analysis or assessment sets and all of their corresponding rows move with them. 
+
+\
+
+Cross-validation is a well established resampling method. While there are a number of variations, the most common cross-validation method is **V-fold cross-validation**. Simple V-fold cross-validation creates $V$ different, randomly selected, versions of the original training set (called the folds) that have roughly equal size.
+
+For illustration, $V = 3$ is shown in Figure \@ref(fig:cv1) for a data set of 30 training set observations with random fold allocations. The number inside the symbols is the observation id. The color of the symbols represents their randomly assigned folds. 
+
+```{r cv1, echo=FALSE, fig.cap="*A diagram of 3-fold cross-validation for a training set containing 30 observations*", out.width=400,fig.align="center"}
+knitr::include_graphics(".imgs/02_crossValidation.png")
+```
+
+\
+
+For this hypothetical three-fold cross-validation, the three iterations of resampling are illustrated in Figure \@ref(fig:cv2). For each resampling iteration, one fold with 10 observations is held out for assessment statistics and the remaining folds are used to train the model. Note that this ensures the assessment sets are mutually exclusive and contain different instances. This process continues for each fold so that three models produce three sets of performance statistics.
+
+```{r cv2, echo=FALSE, fig.cap="*Three iterations of the three-fold cross-validation*", out.width=550}
+knitr::include_graphics(".imgs/03_crossValidation.png")
+```
+
+\
+
+Finally, a model is created on the first fold's analysis set and the corresponding assessment set is predicted by the model. The prediction performance is summarized using the chosen measures (e.g., RMSE, the area under the ROC curve, etc.) and these statistics are saved. This process is repeated so that, in the end, there are $V$ estimates of performance for the model and each was calculated on a different assessment set. The cross-validation estimate of performance is computed by averaging the $V$ individual metrics.
+
+When $V = 3$, the analysis sets are 2/3 of the training set and each assessment set is a distinct 1/3. The final resampling estimate of performance averages the $V$ replicates.
+
+Using $V = 3$ is a good choice to illustrate cross-validation, but it is a poor choice in practice because it is too low to generate reliable estimates. In practice, values of $V$ are most often 5 or 10; we generally prefer 10-fold cross-validation as a default because it is large enough for good results in most situations.
+
+What are the effects of changing $V$? Larger $V$ values result in resampling estimates with small bias but substantial variance. Smaller values of $V$ have large bias but low variance. We prefer 10-fold since noise is reduced by replication, but bias is not.
+
+One downside to basic V-fold cross-validation is that, depending on data size or other characteristics, it may be relatively noisier (i.e., have more variability) than other resampling schemes. As with many statistical problems, one way to reduce noise is to gather more data. For cross-validation, this means averaging more than $V$ statistics.
+
+One way to compensate for this is to conduct **repeated V-fold cross-validation**. To create $R$ repeats of V-fold cross-validation, the same fold generation process is done $R$ times to generate $R$ collections of $V$ partitions. Now, instead of averaging $V$ statistics, $V×R$ statistics are averaged to estimate performance. Due to the Central Limit Theorem, the summary statistics from each model tend toward a normal distribution, as long as we have a lot of data relative to $V×R$. 
+
+For example, Figure \@ref(fig:repeatedcv) show how quickly the standard error decreases with 1 to 10 Replicates on a dataset where 10-fold cross-validation uses assessment sets that contain roughly 234 observations. With simple 10-fold cross-validation (1 Replicate), the standard error of the mean RMSE is $σ/\sqrt 10$. If this is too noisy, repeats reduce the standard error to $σ/\sqrt{10R}$. 
+
+```{r repeatedcv, echo=FALSE, fig.cap="*The standard error of the mean RMSE decreases with the number of cross-validation replicates with assessment sets around 234 observations.*", out.width=600}
+knitr::include_graphics(".imgs/04_crossValidation.png")
+```
+
+\
+  
+Since more data are being averaged, the reduction in the variance of the final average decreases and the final average is more stable. Again, the noisiness of this procedure is relative and, as one might expect, is driven by the amount of data in the assessment set. Larger numbers of replicates tend to have less impact on the standard error. However, if the baseline value of the standard variance $\sigma$ is impractically large, the diminishing returns on replication may still be worth the extra computational costs.
+
+One other variation, **leave-one-out cross-validation**, has $V$ equal to the size of the training set. This is a somewhat deprecated technique and may only be useful when the training set size is extremely small.
+
+Another variant of V-fold cross-validation is **Monte Carlo cross-validation**. Like V-fold cross-validation, it allocates a fixed proportion of data to the assessment sets. The difference between MCCV and regular cross-validation is that, for MCCV, this proportion of the data is randomly selected each time. This results in assessment sets that are not mutually exclusive, i.e. some of the same data points are used in different assessment sets. This is useful when the data set is large and the computational cost of creating $V$ mutually exclusive assessment sets is prohibitive. The downside is that the assessment sets are not as independent as in V-fold cross-validation.
+
+
+\
+
+**Create stratified 10-fold cross-validation for Titanic dataset.**
+
+Note that when the outcome is categorical, stratified splitting techniques can also be applied to make sure that the analysis and assessment sets produce the same frequency distribution of the outcome. Again, this is a good idea when a continuous outcome is skewed or a categorical outcome is imbalanced, but is unlikely to be problematic otherwise.
+
+```{r}
+set.seed(1001)
+df2_folds <- vfold_cv(df1_train, v=10, strata=Survived)
+```
+
+
+\
+
+Check the distribution of the outcome variable in the folds.
+
+```{r}
+df2_folds$splits[[1]] |> analysis() |> 
+  summarise(n=n(), .by=Survived) |> 
+  mutate(prop = n/sum(n))
+```
+
+
+\
+
+# Feature engineering
+
+Chapter 8 "[Feature Engineering with recipes]{.underline}" from *Tidy Modeling with R* ([Kuhn & Johnson, 2023](#kuhn2023))\
+Appendix A "[Recommended preprocessing]{.underline}" from *Tidy Modeling with R* ([Kuhn & Johnson, 2023](#kuhn2023))
+
+\
+
+Feature engineering entails reformatting predictor values to make them easier for a model to use effectively. This includes transformations and encodings of the data to best represent their important characteristics. Imagine that you have two predictors in a data set that can be more effectively represented in your model as a ratio; creating a new predictor from the ratio of the original two is a simple example of feature engineering.
+
+Take the location of a house as a more involved example. There are a variety of ways that this spatial information can be exposed to a model, including neighborhood (a categorical measure), longitude/latitude, distance to the nearest school or university, and so on. When choosing how to encode these data in modeling, we might choose an option we believe is most associated with the outcome. The original format of the data, for example numeric (e.g., distance) versus categorical (e.g., neighborhood), is also a driving factor in feature engineering choices.
+
+
+Other examples of feature engineering to build better features for modeling include:
+
+*  Correlation between predictors can be reduced via feature extraction or the removal of some predictors.
+
+*  Models that use variance-type measures may benefit from coercing the distribution of some skewed predictors to be symmetric by estimating a transformation.
+
+*  Reformatting may be required by a specific modeling technique. Some models use geometric distance metrics and, consequently, numeric predictors should be centered and scaled so that they are all in the same units. Otherwise, the distance values would be biased by the scale of each column.
+
+Different models have different preprocessing requirements and some, such as tree-based models, require very little preprocessing at all.
+
+\
+
+A recipe is an object that defines a series of steps for data processing. Unlike making transformations directly in the formula inside a modeling function, the recipe specifies and makes explicit the steps via `step_*()` functions without immediately executing them; it is only a specification of what should be done. This way, the same recipe can be used on multiple modeling functions and the steps can be easily modified. 
+
+This is useful because the type of preprocessing needed depends on the type of model being fit. For example, models that use distance functions or dot products (neural networks, KNN, and support vector machines) should have all of their predictors on the same scale so that distance is measured appropriately, so they require predictors that have been centered and scaled. Therefore, their workflows will require recipes with these preprocessing steps.
+
+In contrast, tree-based models (e.g., decision trees, random forests, and gradient boosting machines) do not require predictors to be centered and scaled. They can handle predictors that are on different scales and can handle missing data. Therefore, their workflows will require recipes with fewer preprocessing steps.
+
+Figure \@ref(fig:preproc_recipe) shows the baseline levels of preprocessing that are needed for various model functions. The preprocessing methods are categorized as:
+
+*  dummy: Do qualitative predictors require a numeric encoding (e.g., via dummy variables or other methods)?
+
+*  zv: Should columns with a single unique value be removed?
+
+*  impute: If some predictors are missing, should they be estimated via imputation?
+
+*  decorrelate: If there are correlated predictors, should this correlation be mitigated? This might mean filtering out predictors, using principal component analysis, or a model-based technique (e.g., regularization).
+
+*  normalize: Should predictors be centered and scaled?
+
+*  transform: Is it helpful to transform predictors to be more symmetric?
+
+The information below is not exhaustive and may depend on the specific implementation. For example, as noted below the table, some models may not require a particular preprocessing operation but the implementation may require it. In the table, $✔$ indicates that the method is required for the model and $×$ indicates that it is not. The $◌$ symbol means that the model may be helped by the technique but it is not required.
+
+```{r preproc_recipe, echo=FALSE, fig.cap="*Baseline levels of preprocessing that are needed for various model functions.*", out.width=500}
+knitr::include_graphics(".imgs/preproc_req_by_model.png")
+```
+
+Footnotes:
+
+1. Decorrelating predictors may not help improve performance. However, fewer correlated predictors can improve the estimation of variance importance scores (see [The dilution effect of random forest permutation importance scores when redundant variables are added to the model](https://bookdown.org/max/FES/recursive-feature-elimination.html#fig:greedy-rf-imp) of [M. Kuhn and Johnson (2020)](kuhn2020)). Essentially, the selection of highly correlated predictors is almost random.
+
+2. The needed preprocessing for these models depends on the implementation. Specifically: (a) Theoretically, any tree-based model does not require imputation. However, many tree ensemble implementations require imputation; (b) While tree-based boosting methods generally do not require the creation of dummy variables, models using the `xgboost` engine do.
+
+\
+
+To learn more about each of these models, and others that might be available, see https://www.tidymodels.org/find/parsnip/.
+
+
+```{r}
+# recipe_dt_rf <- recipe(Survived ~ ., data=df1_train)
+```
+
+\
+
+# Model specs and resampling
+
+
+```{r}
+# spec_dt <- decision_tree() |> 
+#   set_engine("rpart") |> 
+#   set_mode("classification")
+# 
+# spec_rf <- rand_forest() |>
+#   set_engine("ranger") |>
+#   set_mode("classification")
+```
+
+\
+
+# Put it all together
+
+
+```{r}
+# workflow_set <- workflow_set(
+#   list(recipe_dt_rf),
+#   list(spec_dt, spec_rf),
+#   cross = TRUE
+# )
+```
+
+\
+
+# Fit the models
+
+
+```{r}
+# df3_results <- workflow_map(workflow_set, "fit_resamples", resamples = df2_folds)
+```
+
+
+```{r}
+# autoplot(df3_results)
+```
+
+
+\
+
+# Validate the models
+
+\
+
+Predict
+
+```{r}
+
+```
+
+
+\
+
+Validate
+
+```{r}
+
+```
+
+
+\
+
+# References {#refs}
+
+
+\
+Kuhn, M. e Johnson, K. 2013. [*Applied Predictive Modeling*]{.underline}. Springer. ISBN 978-1-4614-6848-6. [online](https://link.springer.com/book/10.1007/978-1-4614-6849-3){#kuhn2013}
+
+\
+Kuhn, M. e Johnson, K. 2020. [*Feature Engineering and Selection: A Practical Approach for Predictive Models*]{.underline}. Taylor & Francis Group. [online](https://bookdown.org/max/FES/){#kuhn2020}
+
+\
+Kuhn, M. e Johnson, K. 2023. [*Tidy Modeling with R*]{.underline}. Taylor & Francis Group. [online](https://www.tmwr.org/){#kuhn2023}
