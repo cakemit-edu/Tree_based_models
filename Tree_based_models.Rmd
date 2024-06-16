@@ -34,6 +34,45 @@ theme_update(
   plot.caption = element_text(colour="gray50", hjust=0, size=8),
   legend.title = element_blank(),
 )
+
+# functions
+tidyConfMat <- function(df) {
+  df |> 
+    mutate(
+      y = case_when(name=="cell_1_1" ~ 1,
+                    name=="cell_2_2" ~ 0,
+                    name=="cell_1_2" ~ 1,
+                    name=="cell_2_1" ~ 0),
+      x = case_when(name=="cell_1_1" ~ 0,
+                    name=="cell_2_2" ~ 1,
+                    name=="cell_1_2" ~ 1,
+                    name=="cell_2_1" ~ 0),
+      category = case_when(y==1 & x==0 ~ "TP",
+                           y==0 & x==1 ~ "TN",
+                           y==0 & x==0 ~ "FN",
+                           y==1 & x==1 ~ "FP",
+                           .default=NA),
+      gg.lbl = paste0(value," (", category, ")" ),
+      gg.col = case_when(y==1 & x==0 ~ "darkgreen",
+                         y==0 & x==1 ~ "darkgreen",
+                         y==0 & x==0 ~ "red",
+                         y==1 & x==1 ~ "red",
+                         .default=NA)
+    )
+}
+
+plotConfMat <- function(df) {
+  df |> 
+    ggplot(aes(x, y)) +
+    geom_tile(aes(fill=gg.col), colour="white", alpha=.6) +
+    geom_text(aes(label=gg.lbl), size=3) +
+    facet_wrap(~model, nrow=1) +
+    scale_x_continuous(expand=expansion(mult=c(0,0)), breaks=NULL, position="top") +
+    scale_y_continuous(expand=expansion(mult=c(0,0)), breaks=NULL) +
+    theme(legend.position = "none") +
+    scale_fill_identity() +
+    labs(title = "Confusion matrix", x="TRUTH", y="PREDICTION")
+}
 ```
 
 \
@@ -98,6 +137,7 @@ df0 <- read.csv("_datasets/train.csv") |> as_tibble() |>
   
   na.omit() |> # omits 177 observations missing Age
   mutate(AgeGroup = if_else(Age < 18, "children", "adults")) |> 
+  # select(-Age) |> 
   
   rename(ParCh=Parch) |> 
   mutate(Embarked = case_match(Embarked,
@@ -110,7 +150,7 @@ df0 <- read.csv("_datasets/train.csv") |> as_tibble() |>
   
   mutate(Pclass = factor(Pclass, ordered=T)) |> 
   
-  mutate(Survived = as.factor(as.logical(Survived))) |> 
+  mutate(Survived = factor(as.logical(Survived), levels=c(TRUE, FALSE))) |> 
   
   select(-Name, -Ticket, -Cabin)
 
@@ -399,21 +439,18 @@ To learn more about each of these models, and others that might be available, se
 **Create recipe(s) for preprocessing the data**
 
 ```{r}
-rec_trees_na_omitted <- recipe(Survived ~ ., data=df1_train) |> 
+rec_na_omitted <- recipe(Survived ~ ., data=df1_train) |> 
   update_role(PassengerId, new_role="ID") |> 
   step_naomit(all_predictors(), skip=F)
 
-rec_trees <- recipe(Survived ~ ., data=df1_train) |> 
+rec_simple <- recipe(Survived ~ ., data=df1_train) |> 
   update_role(PassengerId, new_role="ID")
 ```
 
 \
 
-# Models
 
-\
-
-## Decision Tree
+# Decision Tree
 
 Chapter 10.3 Decision Trees from Practical Machine Learning with R ([Lange 2024](#lange2024))\
 
@@ -430,7 +467,7 @@ tree_spec <-
 tree_fit <- 
   workflow() |>
   add_model(tree_spec) |> 
-  add_recipe(rec_trees) |>
+  add_recipe(rec_simple) |>
   fit(data=df1_train)
 
 tree_fit
@@ -468,39 +505,20 @@ Note that not all decision rules and nodes from the Decision Tree in Figure \@re
 
 \
 
-### Performance metrics
+### Results
 
 From Federico Comotto's TDS article [Evaluation metrics: leave your comfort zone and try MCC and Brier Score](https://towardsdatascience.com/evaluation-metrics-leave-your-comfort-zone-and-try-mcc-and-brier-score-86307fb1236a) on Jan 8, 2022.\
 
-
-
-```{r}
-tree_test <- 
-  augment(tree_fit, new_data=df1_test) |> 
-  mutate(Survived = fct_relevel(Survived, "TRUE", "FALSE"),
-         .pred_class = fct_relevel(.pred_class, "TRUE", "FALSE")) 
-
-conf_mat(tree_test, truth=Survived, estimate=.pred_class)
-```
-
 \
 
-```{r}
-class_and_probs_metrics <- metric_set(accuracy, sensitivity, specificity, 
-                                      precision, recall, 
-                                      roc_auc, brier_class)
+Select classification and probability metrics to evaluate all models.
 
-(tree_metrics <- tree_test |> 
-    class_and_probs_metrics(truth=Survived, .pred_TRUE, estimate=.pred_class) |> 
-    pivot_wider(names_from=.metric, values_from=.estimate) |> 
-    mutate(f1 = 2 * ((precision * recall) / (precision + recall))) |> 
-    pivot_longer(-.estimator, names_to=".metric", values_to=".estimate") |> 
-    mutate(.estimate = round(.estimate, 4)))
+```{r}
+class_and_probs_metrics <- metric_set(accuracy, roc_auc, f_meas, brier_class, 
+                                      sensitivity, specificity)
 ```
 
-\
-
-[Accuracy]{.underline} it is the proportion of correct predictions (TP + TN) among the total number of cases examined.
+[Accuracy]{.underline} is the proportion of correct predictions (TP + TN) among the total number of cases examined.
 
 [Precision]{.underline} is the proportion of correct positive predictions (TP) among the total number of positive predictions made by the model (TP + FP).
 
@@ -508,7 +526,7 @@ class_and_probs_metrics <- metric_set(accuracy, sensitivity, specificity,
 
 [F1 score]{.underline} is the harmonic mean of precision and recall. And its evolved version: Weighted F1 score, which allows the analyst to assign weights to precision and recall.
 
-[AUC]{.underline} stands for “Area under the ROC Curve” and it measures the area under a plot showing the performance of a classification model at all classification thresholds.
+[AUC]{.underline} stands for “Area under the ROC Curve” and it measures the area under a plot of sensitivity ($TP/(TP+FN)$), also called True Positive Rate against specificity ($TN/(TN+FP)$), also called False Positive Rate at all classification thresholds.
 
 [Brier Score]{.underline} determines the accuracy of a predicted probability score. BS is the mean squared error, applied to predicted probabilities.
 
@@ -518,10 +536,57 @@ BS = \frac{1}{N} \sum_{i=1}^{N} (f_i - o_i)^2
 $$
 
 
+\
 
-With an overall accuracy of `r scales::percent(filter(tree_metrics, .metric=="accuracy")$.estimate, accuracy=1)`, the prediction results are not bad. The model worked particularly well in predicting passengers that did not survive (negative class; specificity = `r scales::percent(filter(tree_metrics, .metric=="specificity")$.estimate, accuracy=1)`). As you can see, specificity is higher than sensitivity. However, the difference is not big enough to consider the dataset as unbalanced.
+Use the model to make predictions on the test set.
 
-**How does the Optimizer determine the decision rules?**
+```{r}
+tree_test <- augment(tree_fit, new_data=df1_test)
+```
+
+
+\
+
+```{r fig.asp=1, fig.width=2}
+tree_conf_matrix <- conf_mat(tree_test, truth=Survived, estimate=.pred_class) |> 
+  tidy() |> 
+  tidyConfMat() |> 
+  mutate(model="DecTree0")
+
+plotConfMat(tree_conf_matrix)
+```
+
+\
+
+```{r fig.width=3, fig.asp=1}
+tree_roc_curve <- 
+  tree_test |> 
+  roc_curve(truth=Survived, .pred_TRUE)
+
+autoplot(tree_roc_curve, size=1.5) +
+  scale_x_continuous(expand=expansion(mult=c(0,0))) +
+  scale_y_continuous(expand=expansion(mult=c(0,0))) +
+  theme_light(base_size=9) +
+  labs(title="ROC curve of Decision Tree model", 
+       x="False Positive Rate (specificity)", y="True Positive Rate (sensitivity)")
+```
+
+\
+
+```{r}
+(tree_metrics <- tree_test |> 
+    class_and_probs_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
+    mutate(.estimate = round(.estimate, 4),
+           model="DecTree0"))
+```
+
+\
+
+With an overall accuracy of `r scales::percent(filter(tree_metrics, .metric=="accuracy")$.estimate, accuracy=1)`, the prediction results are not bad. The model worked particularly well in predicting passengers that did not survive (specificity = `r filter(tree_conf_matrix,category=="TN")$value`/(`r filter(tree_conf_matrix,category=="TN")$value`+`r filter(tree_conf_matrix,category=="FP")$value`) = `r scales::percent(filter(tree_metrics, .metric=="specificity")$.estimate)`). As you can see, specificity is higher than sensitivity. However, the difference is not big enough to consider the dataset as unbalanced.
+
+\
+
+**How does the algorithm determine the decision rules?**
 
 Decision rules are determined from the top of the Decision Tree down to the bottom. The Optimizer starts with finding the best decision rule for the root node, then moves down to the child nodes and finds the decision rule for each of the child nodes and then for the child nodes of the child nodes. The process stops when either the maximum level set with the hyper-parameter level is reached (level=3 in our case) or when splitting a node further no longer increases the predictive quality.
 
@@ -553,7 +618,7 @@ The reason is that combining several Decision Trees gives us a very strong predi
 
 \
 
-## Random Forest
+# Random Forest
 
 Chapter 10.4 Random Forest from Practical Machine Learning with R ([Lange 2024](#lange2024))\
 
@@ -579,23 +644,23 @@ knitr::include_graphics(".imgs/rf_bagging.png")
 
 The default setting for number of `trees` in `ranger` implementation of RF is 500. However, the number of trees is a [hyper-parameter]{.underline} and can be optimized. In contrast to the hyper-parameters `min_n` and `mtry`, a high number of `trees` in a Random Forest cannot cause overfitting. The number of trees is a trade-off between computational cost and predictive quality. The more trees, the better the predictive quality but the longer the computational time.
 
-
+In this case we are using the `ranger` engine implementation of the Random Forest model. The `ranger` engine is a fast implementation of Random Forests that can handle large datasets. It uses the Gini index for classification splits as default and allows for the use of a version of the Gini index that is unbiased for the number of categories or category frequencies (`impurity_corrected`) as criteria for the assessment of variable importance (See [Nembrini et al., 2018](#nembrini2018)). 
 
 
 ```{r}
 rf_spec <- 
   rand_forest(
-    mtry=2,   # nr of predictors that will be randomly selected, defaults to sqrt(ncol(x))
-    min_n=10, # target nr of obs in node to split, defaults to 10/classification and 5/regression
-    trees=500
+    mtry  = 2,  # nr of predictors that will be randomly selected, defaults to sqrt(ncol(x))
+    min_n = 10, # target nr of obs in node to split, defaults to 10/classification and 5/regression
+    trees = 500
   ) |>
-  set_engine("ranger", num.threads=parallel::detectCores()) |>
+  set_engine("ranger", num.threads=parallel::detectCores(), importance="impurity_corrected") |>
   set_mode("classification")
 
 set.seed(2021)
 rf_fit <- 
   workflow() |>
-  add_recipe(rec_trees_na_omitted) |>
+  add_recipe(rec_na_omitted) |>
   add_model(rf_spec) |>
   fit(df1_train)
 
@@ -605,25 +670,140 @@ rf_fit
 
 The performance on the OOB validation data is ok, but the real challenge is to predict the test data. 
 
+\
+
+### Results
+
+\
+
+Use the model to make predictions on the test set.
 
 ```{r}
-rf_test <- 
-  augment(rf_fit, new_data=df1_test) |> 
-  mutate(Survived = fct_relevel(Survived, "TRUE", "FALSE"),
-         .pred_class = fct_relevel(.pred_class, "TRUE", "FALSE")) 
+rf_test <- augment(rf_fit, new_data=df1_test)
+```
 
-conf_mat(rf_test, truth=Survived, estimate=.pred_class)
+\
+
+Before we get into prediction performance, though, let's take a look at variable importance. 
+
+```{r fig.width=4}
+rf_res_features <- ranger::importance(extract_fit_engine(rf_fit)) |> tidy() |> 
+  arrange(desc(x))
+
+rf_res_features |> 
+  mutate(names = fct_reorder(names, x)) |>
+  ggplot(aes(x=x, y=names)) +
+  geom_col(fill="cadetblue") +
+  scale_x_continuous(expand=expansion(mult=c(0,0.1))) +
+  theme(panel.grid.major.y=element_blank()) +
+  labs(title="Variable importance of Random Forest model", 
+       subtitle="Based on Gini index adjusted for number of categories",
+       x="Importance", y=NULL)
+```
+
+In `ranger`, the impurity importance measures sums of impurity measures, while the permutation importance are the differences of prediction errors. Both are not proper units and one should be careful when comparing importance values between datasets. The `randomForest` package "scales" the importance measures by (pseudo) standard errors by default so the results are not immediately comparable. The scaled importance is biased in some cases and should be avoided (see [Nicodemus et al. 2010](#nicodemus2010)).
+
+
+Further reading:
+
+[importance = "permutation", what is this doing?](https://github.com/imbs-hl/ranger/issues/237)
+
+[importance = "impurity", what is this doing when performing regression?](https://github.com/imbs-hl/ranger/issues/489)
+
+[What units of importance are the measures reported in?](https://github.com/imbs-hl/ranger/issues/308)
+
+
+
+\
+
+```{r fig.asp=1, fig.width=2}
+rf_conf_matrix <- conf_mat(rf_test, truth=Survived, estimate=.pred_class) |> 
+  tidy() |> tidyConfMat() |> 
+  mutate(model="RndFor0")
+
+plotConfMat(rf_conf_matrix)
+```
+
+
+\
+
+```{r fig.width=3, fig.asp=1}
+rf_roc_curve <- rf_test |> 
+  roc_curve(truth=Survived, .pred_TRUE)
+
+autoplot(rf_roc_curve) +
+  coord_cartesian(xlim = c(0,1), ylim=c(0,1.01), expand = FALSE) +
+  theme_light(base_size=9) +
+  labs(title="ROC curve of Random Forest model", 
+       x="False Positive Rate (specificity)", y="True Positive Rate (sensitivity)")
 ```
 
 \
 
 ```{r}
 (rf_metrics <- rf_test |> 
-   class_and_probs_metrics(truth=Survived, .pred_TRUE, estimate=.pred_class) |> 
-   pivot_wider(names_from=.metric, values_from=.estimate) |> 
-   mutate(f1 = 2 * ((precision * recall) / (precision + recall))) |> 
-   pivot_longer(-.estimator, names_to=".metric", values_to=".estimate") |> 
-   mutate(.estimate = round(.estimate, 4)))
+    class_and_probs_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
+    mutate(.estimate = round(.estimate, 4),
+           model="RndFor0"))
+```
+
+
+\
+
+
+**Compare models**
+
+```{r fig.width=3, fig.height=2}
+df3_conf_matrix <-  
+  bind_rows(
+    rf_conf_matrix,
+    tree_conf_matrix
+  )
+
+plotConfMat(df3_conf_matrix)
+```
+
+
+\
+
+```{r fig.width=6, fig.height=3}
+p2 <- autoplot(rf_roc_curve) +
+  scale_x_continuous(expand=expansion(mult=c(0,0))) +
+  scale_y_continuous(expand=expansion(mult=c(0,0))) +
+  labs(title=glue::glue("Random Forest - AUC: {filter(rf_metrics, .metric=='roc_auc')$.estimate}"), 
+       x="False Positive Rate (specificity)", y="True Positive Rate (sensitivity)")
+
+p1 <- autoplot(tree_roc_curve) +
+  scale_x_continuous(expand=expansion(mult=c(0,0))) +
+  scale_y_continuous(expand=expansion(mult=c(0,0))) +
+  labs(title=glue::glue("Decision Tree - AUC: {filter(tree_metrics, .metric=='roc_auc')$.estimate}"), 
+       x="False Positive Rate (specificity)", y="True Positive Rate (sensitivity)")
+
+p1 + p2 &
+  theme_light(base_size=8) &
+  theme(axis.title = element_text(size=7))
+```
+
+\
+
+```{r fig.width=6}
+df4_metrics <- 
+  bind_rows(
+    rf_metrics,
+    tree_metrics
+  )
+
+df4_metrics |> 
+  ggplot(aes(x=model, y=.estimate, group=.metric)) +
+  geom_line(aes(color=.metric), linewidth=.7) + geom_point(aes(color=.metric)) +
+  geom_text(aes(label=scales::number(.estimate, accuracy=.01)), vjust=-1, size=3) +
+  facet_wrap(~.metric, scales="free_y", ncol=3) +
+  scale_y_continuous(expand=expansion(mult=c(0.2,0.25))) +
+  scale_fill_brewer(palette="Set2") +
+  theme(legend.position="none",
+        panel.grid.major=element_blank()) +
+  labs(title="Comparison of Decision Tree and Random Forest model metrics", 
+       x=NULL, y=NULL)
 ```
 
 
@@ -631,7 +811,7 @@ conf_mat(rf_test, truth=Survived, estimate=.pred_class)
 
 \
 
-## Neural Network
+# Neural Network
 
 ```{r}
 # nnet_spec <- 
@@ -660,23 +840,22 @@ Chapter 15 "[Screening many models]{.underline}" from *Tidy Modeling with R* ([K
 
 **Creating a set of workflows**
 
-Creating a set of workflows is a way to organize the modeling process. This is particularly useful when there are many models to evaluate. The `workflow_set()` function creates a tibble with a list of preprocessor and model combinations. 
+Creating a set of workflows is a way to organize the modeling process. This is particularly useful when there are many models to evaluate. The `workflow_set()` function creates a tibble with a list of preprocessor and model combinations. You can combine the recipe objects with the corresponding model specifications. By default the `cross` parameter is set to `TRUE`, which makes each recipe object match with each model specification. In this case it is set to `FALSE` because decision trees don't need missing values to be removed from the training set.
 
 ```{r}
 wfs_trees <- 
   workflow_set(
-    preproc = list(recNAomit = rec_trees_na_omitted),
-    models = list(tree_spec, rf_spec)
+    preproc = list(recSimple = rec_simple, recNAomit = rec_na_omitted),
+    models = list(tree_spec, rf_spec),
+    cross=FALSE
   )
 
 wfs_trees
 ```
 
-Since there is only a single preprocessor, `workflow_set()` creates a set of workflows with two workflows. If the preprocessor contained more than one entry, the function would create all combinations of preprocessors and models.
+Since there is only a single preprocessor for each model, `workflow_set()` creates a set with two workflows. 
 
 The `wflow_id` column is automatically created but can be modified using a call to `mutate()`. 
-
-The `info` column contains a tibble with some identifiers and the workflow object. 
 
 The `option` column is a placeholder for any arguments to use when we evaluate the workflow. When a function from the `tune` or `finetune` package is used to tune (or resample) a workflow, this argument will be used. 
 
@@ -700,6 +879,8 @@ workflow_set1
 
 \
 
+The `info` column contains a tibble with some identifiers and the workflow object. 
+
 A specific workflow can be extracted like this:
 
 
@@ -708,95 +889,79 @@ wfs_trees |> extract_workflow(id = "recNAomit_rand_forest")
 ```
 
 
-\
-
-Additionally, you can create another workflow set that uses `workflow_variables()` with `dplyr` selectors for the outcome and predictors:
-
-```{r}
-model_vars <- workflow_variables(outcomes = Survived, 
-                                 predictors = c(-PassengerId))
-
-wfs_no_preproc <- 
-  workflow_set(
-    preproc = list(recSimple = model_vars), 
-    models = list(tree_spec)
-  )
-
-wfs_no_preproc
-```
-
-\
-
-These sets of workflows are tibbles with the extra class of `workflow_set`. Row binding does not affect the state of the sets and the result is itself a `workflow_set`:
-
-```{r}
-wfs_all <- bind_rows(wfs_trees, wfs_no_preproc)
-
-wfs_all
-```
+Note that you could create another workflow set with other combinations of recipes and model specifications or different tuning parameters and combine it with the first one. The objects created are tibbles with the extra class of `workflow_set` and row binding does not affect the state of the sets and the result is itself a `workflow_set`.
 
 \
 
 ## Screening models
 
-To evaluate their performance, we can use the standard tuning or resampling functions (e.g., `tune_grid()` and so on). The `workflow_map()` function will apply a given function to all of the workflows in the set; the default function is `tune_grid()`.
-
-For this example, grid search is applied to each workflow using up to 25 different parameter candidates. There are a set of common options to use with each execution of `tune_grid()`. For example, in the following code we will use the same resampling and control objects for each workflow, along with a grid size of $25$. The `workflow_map()` function has an additional argument called `seed`, which is used to ensure that each execution of `tune_grid()` consumes the same random numbers.
+The `workflow_map()` function applies a given function to all of the workflows in the set; the default function is `tune_grid()`. To screen all workflows for the best model we can use the standard tuning or resampling functions (e.g., `tune_grid()` and so on). In this case, to run cross-validation resampling we can use `fit_resamples`.
 
 ```{r}
-grid_ctrl <-
-   control_grid(
-      save_pred = TRUE,
-      parallel_over = "everything",
-      save_workflow = TRUE
-   )
-
-grid_results <- wfs_all |> 
+wfs_results <- 
   workflow_map(
-    fn = "tune_grid",
-    control = grid_ctrl,
+    wfs_trees, "fit_resamples",
     resamples = df2_folds,
-    seed = 1503,           # to ensure each execution of `tune_grid()` uses the same random numbers
-    grid = 25,
-    verbose=T
+    seed = 1503   # to ensure each execution of the function uses the same random numbers
   )
 ```
 
 \
 
-`grid_results` is an updated `workflow_set` object. The results show that the `option` and `result` columns have been updated:
+This will loop over all the workflows in the `workflow_set` object, applying the `fit_resamples` function to each one, using the `df2_folds` cross-validation specifications. The results of each of these runs is stored under the respective model row in a new updated `workflow_set` object. 
+
+Note that the resulting object shows that the `option` and `result` columns have been updated. 
 
 ```{r}
-grid_results
+wfs_results
 ```
 
-The `option` column now contains all of the options that we used in the `workflow_map()` call. This makes our results reproducible. In the result columns, the “`tune[+]`” and “`rsmp[+]`” notations mean that the object had no issues. A value such as “`tune[x]`” occurs if all of the models failed for some reason.
+The `option` column now contains any options used in the `workflow_map()` call. In the result columns, the “`tune[+]`” or “`rsmp[+]`” notations mean that the object had no issues. A value such as “`tune[x]`” or "`list[0]`" occurs if all the versions of the resampled models failed for some reason.
+
+Note that all the results (the workflow, the model, the metrics and OOB predictions) of each iteration of resampling and tuning parameters under each model specification can be extracted for examination if needed.
+
+The results can also be can be quickly visualized using the `autoplot()` helper function.
+
+```{r fig.asp=.5}
+autoplot(wfs_results) +
+  scale_x_continuous(breaks=1:2, expand=expansion(mult=c(.2,.2))) +
+  scale_y_continuous(expand=expansion(mult=c(0.5,0.5))) +
+  scale_color_brewer(palette="Dark2") +
+  theme(panel.grid.major.x=element_blank()) +
+  labs(title="Model performance after resampling - selected metrics",
+       subtitle="10-fold cross-validation with 5 repeats",
+       y=NULL)
+```
+
+
 
 There are a few convenience functions for examining grid results. The `rank_results()` function will order the models by some performance metric. By default, it uses the first metric in the metric set (in this case `accuracy`). Let’s `filter()` to look only at AUC:
 
 ```{r}
-grid_results |>
+wfs_results |>
   rank_results() |>
   filter(.metric == "roc_auc") |>
   select(model, .config, roc_auc=mean, rank)
 ```
 
-Also by default, `rank_results()` ranks all of the candidate sets; that’s why the same model can show up multiple times in the output. An option, called select_best, can be used to rank the models using their best tuning parameter combination.
 
-The `autoplot()` method plots the rankings; it also has a select_best argument. The plot in Figure \@ref(fig:grid_results_plot) visualizes the best results for each model and is generated with:
+Also by default, `rank_results()` ranks **all** candidate sets; that’s why the same model can show up multiple times in the output. An option, called `select_best`, can be used to rank the models using their best tuning parameter combination.
 
-```{r grid_results_plot, fig.cap="*Model selection after resampling based on AUC performance*", fig.width=5, fig.asp=.5}
+
+Imagine we had many combinations of model specs and recipes with resampling. The `autoplot()` method plots the rankings; it also has a `select_best` argument. The plot in Figure \@ref(fig:wfs_results_plot) visualizes the best results for each model and is generated with:
+
+```{r wfs_results_plot, fig.cap="*Model selection after resampling based on AUC performance*", fig.width=5, fig.asp=.5}
 autoplot(
-  grid_results,
+  wfs_results,
   rank_metric = "roc_auc",  # <- how to order models
   metric = "roc_auc",       # <- which metric to visualize
-  select_best = TRUE        # <- one point per workflow
+  select_best = TRUE        # <- one model per workflow
 ) +
   coord_flip() +
   geom_text(aes(y=mean-.02, label=wflow_id), hjust=1, size=3) +
   scale_x_reverse(breaks=1:3, expand=expansion(mult=c(.2,.2))) +
   scale_y_continuous(expand=expansion(mult=c(0,0)), limits=c(0.7, 1)) +
-  scale_color_brewer(palette="Dark2") +
+  scale_color_brewer(palette="Dark2", direction=-1) +
   theme(panel.grid.major.y=element_blank()) +
   theme(legend.position = "none") +
   labs(title="Model selection after resampling - AUC",
@@ -806,73 +971,187 @@ autoplot(
 
 \
 
-In case you want to see the tuning parameter results for a specific model, like Figure \@ref(), the id argument can take a single value from the wflow_id column for which model to plot:
+In case you want to see the tuning parameter results for a specific model, like Figure \@ref(), the id argument can take a single value from the `wflow_id` column for which model to plot:
 
 ```
-autoplot(grid_results, id="recNAomit_rand_forest", metric = "roc_auc")
+autoplot(wfs_results, id="recNAomit_rand_forest", metric = "roc_auc")
 ```
 
-There are also methods for collect_predictions() and collect_metrics(). The former collects the predictions from the resampling process and the latter collects the performance metrics. The results are stored in a tibble with a list column that contains the predictions or metrics for each resample.
+There are also methods for `collect_predictions()` and `collect_metrics()`. The former collects the predictions from the resampling process and the latter collects the performance metrics. The results are stored in a tibble with a list column that contains the predictions or metrics for each resample.
 
 
 \
-
-# Finalizing
 
 The process of choosing the final model and fitting it on the training set is straightforward. The first step is to pick a workflow to finalize. The following code extracts the best model from the set, updates the parameters with the numerically best settings, and fits to the training set:
 
 ```{r}
-final_fit <- 
-  grid_results |> 
-  extract_workflow("recNAomit_rand_forest") %>% 
-  # Include the best results for hyper-parameters
+best_fit <- 
+  wfs_results |> 
+  # Extract the workflow from the set
+  extract_workflow("recNAomit_rand_forest") |> 
+  # Include the best results for hyper-parameters in case of tuning
   finalize_workflow(
-    grid_results |>  
+    wfs_results |>  
       extract_workflow_set_result("recNAomit_rand_forest") |> 
       select_best(metric = "roc_auc")
   ) |> 
-  last_fit(split = df1_split)
+  fit(df1_train)
 
-final_fit
+best_fit
+```
+
+\
+
+We can also pick another model and finalize it. 
+
+```{r}
+tree2_fit <- 
+  wfs_results |> 
+  extract_workflow("recSimple_decision_tree") |> 
+  # Include the best results for hyper-parameters in case of tuning
+  finalize_workflow(
+    wfs_results |>  
+      extract_workflow_set_result("recNAomit_rand_forest") |> 
+      select_best(metric = "roc_auc")
+  ) |> 
+  fit(df1_train)
+
+tree2_fit
+```
+
+\
+
+Next we will apply the extracted models to the test data and include the results in the comparison datasets.
+
+```{r}
+best_test <- augment(best_fit, new_data=df1_test)
+
+best_roc_curve <- best_test |> 
+  roc_curve(truth=Survived, .pred_TRUE)
+
+best_conf_matrix <- conf_mat(best_test, truth=Survived, estimate=.pred_class) |> 
+  tidy() |> 
+  tidyConfMat() |> 
+  mutate(model="RndFor2")
+
+best_metrics <- best_test |> 
+  class_and_probs_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
+  mutate(.estimate = round(.estimate, 4)) |> 
+  mutate(model="RndFor2")
 ```
 
 
 \
 
-We can see the test set metrics results, and visualize the predictions in Figure 15.5.
-
 ```{r}
-collect_metrics(final_fit)
+tree2_test <- augment(tree2_fit, new_data=df1_test)
+
+tree2_roc_curve <- tree2_test |> 
+  roc_curve(truth=Survived, .pred_TRUE)
+
+tree2_conf_matrix <- conf_mat(tree2_test, truth=Survived, estimate=.pred_class) |> 
+  tidy() |> 
+  tidyConfMat() |> 
+  mutate(model="DecTree2")
+
+tree2_metrics <- tree2_test |> 
+  class_and_probs_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
+  mutate(.estimate = round(.estimate, 4)) |> 
+  mutate(model="DecTree2")
 ```
 
-```{r}
-final_test <- final_fit |> 
-  collect_predictions() |> 
-  mutate(Survived = fct_relevel(Survived, "TRUE", "FALSE"),
-         .pred_class = fct_relevel(.pred_class, "TRUE", "FALSE")) 
+\
 
-conf_mat(final_test, truth=Survived, estimate=.pred_class)
+# Overall Results
+
+\
+
+
+```{r}
+df3_conf_matrix <-  
+  bind_rows(
+    df3_conf_matrix,
+    best_conf_matrix,
+    tree2_conf_matrix
+  )
+```
+
+
+```{r fig.width=6, fig.height=2}
+plotConfMat(df3_conf_matrix)
+```
+
+
+\
+
+```{r fig.width=6, fig.height=6}
+p4 <- autoplot(best_roc_curve) +
+  scale_x_continuous(expand=expansion(mult=c(0,0))) +
+  scale_y_continuous(expand=expansion(mult=c(0,0))) +
+  labs(title=glue::glue("RF resampled - AUC: {filter(best_metrics, .metric=='roc_auc')$.estimate}"), 
+       x="False Positive Rate (specificity)", y="True Positive Rate (sensitivity)")
+
+p3 <- autoplot(tree2_roc_curve) +
+  scale_x_continuous(expand=expansion(mult=c(0,0))) +
+  scale_y_continuous(expand=expansion(mult=c(0,0))) +
+  labs(title=glue::glue("DT resampled - AUC: {filter(tree2_metrics, .metric=='roc_auc')$.estimate}"), 
+       x="False Positive Rate (specificity)", y="True Positive Rate (sensitivity)")
+
+
+p1 + p2 + p3 + p4 &
+  theme_light(base_size=8) &
+  theme(axis.title = element_text(size=7))
 ```
 
 \
 
 ```{r}
-(final_metrics <- final_test |> 
-    class_and_probs_metrics(truth=Survived, .pred_TRUE, estimate=.pred_class) |> 
-    pivot_wider(names_from=.metric, values_from=.estimate) |> 
-    mutate(f1 = 2 * ((precision * recall) / (precision + recall))) |> 
-    pivot_longer(-.estimator, names_to=".metric", values_to=".estimate") |> 
-    mutate(.estimate = round(.estimate, 4)))
+df4_metrics <- 
+  bind_rows(
+    df4_metrics,
+    best_metrics,
+    tree2_metrics
+  )
+```
+
+
+```{r}
+df4_metrics |> 
+  ggplot(aes(x=model, y=.estimate, group=.metric)) +
+  geom_line(aes(color=.metric), linewidth=.7) + geom_point(aes(color=.metric)) +
+  geom_text(aes(label=scales::number(.estimate, accuracy=.01)), vjust=-1, size=3) +
+  facet_wrap(~.metric, scales="free_y", ncol=3) +
+  scale_y_continuous(expand=expansion(mult=c(0.2,0.25))) +
+  scale_fill_brewer(palette="Set2") +
+  theme(legend.position="none",
+        panel.grid.major=element_blank()) +
+  labs(title="Comparison of Decision Tree and Random Forest model metrics", 
+       x=NULL, y=NULL)
 ```
 
 \
 
-Compare with results in standalone experiments without cross-validation?
+```{r fig.width=6, fig.asp=.5}
+df_features <- rbind(
+  rf_res_features |> mutate(model="RndFor0"),
+  ranger::importance(extract_fit_engine(best_fit)) |> tidy() |> 
+    arrange(desc(x)) |> 
+    mutate(model="RndFor2")
+)
 
-```{r}
-
+df_features |> 
+  mutate(names = fct_reorder(names, x), .by=model) |>
+  ggplot(aes(x=x, y=names)) +
+  geom_col(fill="cadetblue") +
+  facet_wrap(~model, scales="free_y") +
+  scale_x_continuous(expand=expansion(mult=c(0,0.1))) +
+  theme(panel.grid.major.y=element_blank()) +
+  labs(title="Variable importance of Random Forest models", 
+       subtitle="Based on Gini index adjusted for number of categories",
+       x="Importance", y=NULL)
 ```
 
+\
 
 \
 
@@ -889,3 +1168,9 @@ Kuhn, M. e Johnson, K. 2023. [*Tidy Modeling with R*]{.underline}. Taylor & Fran
 
 \
 Lange, C. 2024. [*Practical Machine Learning with R: Tutorials and Case Studies (1st ed.)*]{.underline}. Chapman and Hall/CRC Press. DOI: [10.1201/9781003367147](https://doi.org/10.1201/9781003367147){#lange2024}
+
+\
+Nembrini, S., Koenig, I. R. & Wright, M. N. (2018). [*The revival of the Gini Importance?*]{.underline} Bioinformatics. DOI: [10.1093/bioinformatics/bty373](https://academic.oup.com/bioinformatics/article/34/21/3711/4994791){#nembrini2018}
+
+\
+Nicodemus, K.K., Malley, J.D., Strobl, C. et al. 2010. [*The behaviour of random forest permutation-based variable importance measures under predictor correlation*]{.underline}. BMC Bioinformatics 11, 110. DOI: [10.1186/1471-2105-11-110](https://doi.org/10.1186/1471-2105-11-110){#nicodemus2010}
