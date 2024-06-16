@@ -17,6 +17,9 @@ options(scipen=999) # "Desliga" notação científica. 000 para ligar.
 # PACOTES 
 library(tidyverse)
 library(tidymodels)
+tidymodels_prefer()
+library(corrr)
+library(GGally)
 
 # PRETTY DOC
 library(gt)
@@ -25,10 +28,10 @@ library(patchwork)
 theme_set(theme_light(base_size=9))
 theme_update(
   panel.grid.minor = element_blank(),
-  panel.grid.major = element_line(colour = "gray92", size = 0.1),
-  plot.title = element_text(size = 12, colour = "gray30", face = "bold"),
-  plot.subtitle = element_text(face = 'italic', colour = "gray50", size = 10),
-  plot.caption = element_text(colour = "gray50", hjust=0, size = 8),
+  panel.grid.major = element_line(colour="gray92", linewidth=0.1),
+  plot.title = element_text(size=10, colour = "gray30", face="bold"),
+  plot.subtitle = element_text(face='italic', colour="gray50", size=9),
+  plot.caption = element_text(colour="gray50", hjust=0, size=8),
   legend.title = element_blank(),
 )
 ```
@@ -83,7 +86,6 @@ print(sessionInfo(), locale=FALSE)
 Sibling = brother, sister, stepbrother, stepsister\
 Spouse = husband, wife (mistresses and fiancés were ignored)\
 
-
 **Parch**: The dataset defines family relations in this way...\
 
 Parent = mother, father\
@@ -91,28 +93,30 @@ Child = daughter, son, stepdaughter, stepson\
 
 Some children travelled only with a nanny, therefore parch=0 for them.
 
-
 ```{r}
 df0 <- read.csv("_datasets/train.csv") |> as_tibble() |> 
   
-  na.omit() |> # excludes 177 observations missing Age
-  mutate(AgeGroup = if_else(Age < 18, "children", "adult")) |> 
+  na.omit() |> # omits 177 observations missing Age
+  mutate(AgeGroup = if_else(Age < 18, "children", "adults")) |> 
   
   rename(ParCh=Parch) |> 
-  
+  mutate(Embarked = case_match(Embarked,
+                               "C" ~ "Cherbourg", 
+                               "Q" ~ "Queenstown", 
+                               "S" ~ "Southampton",
+                               .default=Embarked)) |> 
   mutate(across(where(is.character), ~if_else(.x=="", NA, .x)),
          across(where(is.character), as.factor)) |> 
+  
+  mutate(Pclass = factor(Pclass, ordered=T)) |> 
   
   mutate(Survived = as.factor(as.logical(Survived))) |> 
   
   select(-Name, -Ticket, -Cabin)
-```
 
 
-```{r}
 str(df0)
 ```
-
 
 \
 
@@ -126,21 +130,94 @@ summarytools::dfSummary(df0, style="multiline",
 
 # EDA
 
-```{r}
-
+```{r fig.width=5, fig.asp=.6}
+df0 |> select(is.factor) |> 
+  mutate(across(everything(), as.character)) |> 
+  pivot_longer(dplyr::everything(), values_to="class", names_to="variable") |> 
+  summarise(value=n(), .by=c(variable, class)) |> 
+  mutate(pct = value/sum(value), .by=variable) |> 
+  mutate(variable = as.factor(variable)) |>
+  arrange(variable, pct) |> 
+  mutate(
+    id=row_number(),
+    class = fct_reorder(class, id),
+    class.lbl = case_when(pct>.15 ~ paste0(class,"\n"," (",scales::percent(pct,accuracy=1),")"), 
+                          pct>.1 ~ class,
+                          .default=" "),
+  ) |> 
+  
+  ggplot(aes(y=variable, x=pct, fill=class, group=class)) +
+  geom_col(color="gray") +
+  geom_text(aes(label=class.lbl, group=class), 
+            position = position_fill(.5), check_overlap=T, size=3) +
+  scale_x_continuous(expand=expansion(mult=c(0,.0)), breaks=NULL) +
+  scale_fill_brewer(palette="Set3") +
+  theme(panel.border=element_blank()) +
+  theme(panel.grid.major.x=element_blank(), legend.position="none") +
+  labs(title="Categorical variables in Titanic dataset", 
+       subtitle=glue::glue("n = {nrow(df0)}"), x=NULL, y=NULL)
 ```
 
+\
+
+```{r fig.width=5, fig.asp=.5}
+df0 |> select(-PassengerId) |> 
+  mutate(Survived = as.integer(Survived)) |>
+  correlate(method="spearman") |> 
+  focus(Survived) |>
+  mutate(term = fct_reorder(term, Survived)) |>
+  ggplot(aes(y=term, x=Survived)) +
+  geom_col(fill="cadetblue") +
+  geom_text(aes(x=Survived+.08*sign(Survived),label=round(Survived,2)), size=3) +
+  scale_x_continuous(expand=expansion(mult=c(.0,.0)), limits=c(-1,1)) +
+  labs(title="Correlation between numeric variables and Survival", 
+       subtitle="Spearman correlation", 
+       x="Correlation to Survival (binary T/F)", y=NULL)
+```
+
+\
+
+```{r fig.width=5, fig.asp=.6}
+df0 |> select(is.numeric, -PassengerId) |> 
+  correlate(method="spearman") |> 
+  rearrange(absolute=T) |> 
+  rplot(shape=15, colors=c("red", "white", "blue"), print_cor=T) +
+  theme_bw(base_size=9) +
+  theme(panel.grid.major = element_line(colour = "gray92", size = 0.1),
+        plot.title = element_text(size = 10, colour = "gray30", face = "bold"),
+        plot.subtitle = element_text(face = 'italic', colour = "gray50", size=9),
+        plot.caption = element_text(colour = "gray50", hjust=0, size=8)) +
+  labs(title="Correlation between numeric predictors", 
+       subtitle="Spearman correlation")
+```
+
+\
+
+```{r fig.width=5, fig.asp=1}
+ggbivariate(
+  df0 |> select(is.factor), 
+  outcome = "Survived", 
+  rowbar_args = list(colour = "white",
+                     size = 3,
+                     label_format = scales::label_percent(accurary=1)),
+  title = "Categorical predictors x Survival"
+) +
+  theme(panel.spacing=unit(.5, "lines"), legend.position="bottom") +
+  scale_fill_brewer(palette="Set1") +
+  scale_color_brewer(palette="Set1") +
+  labs(subtitle=glue::glue("n = {nrow(df0)}"))
+```
 
 \
 
 # Splitting
 
-Splitting the data into training and testing sets is a critical step in the modeling process. The training set is used to fit the model and the test set is used to estimate the model's performance on new data. 
+Splitting the data into training and testing sets is a critical step in the modeling process. The training set is used to fit the model and the test set is used to estimate the model's performance on new data.
 
 The `initial_split()` function from the `rsample` package is used to create a single split of the data. The `prop` argument specifies the proportion of the data to be allocated to the training set. The `strata` argument is used to specify a variable that should be used to stratify the data. This is useful when the outcome variable is imbalanced. ([Kuhn & Johnson, 2013](#kuhn2023))
 
 ```{r}
-set.seed(1001)
+set.seed(888)
 df1_split <- rsample::initial_split(df0, prop=.75, strata=Survived)
 df1_split
 ```
@@ -158,15 +235,13 @@ str(df1_train)
 
 These objects are data frames with the same columns as the original data but only the appropriate rows for each set.
 
-Simple random sampling is appropriate in many cases but there are exceptions. When there is a dramatic class imbalance in classification problems, one class occurs much less frequently than another. Using a simple random sample may haphazardly allocate these infrequent samples disproportionately into the training or test set. To avoid this, stratified sampling can be used. The training/test split is conducted separately within each class and then these subsamples are combined into the overall training and test set. 
-
+Simple random sampling is appropriate in many cases but there are exceptions. When there is a dramatic class imbalance in classification problems, one class occurs much less frequently than another. Using a simple random sample may haphazardly allocate these infrequent samples disproportionately into the training or test set. To avoid this, stratified sampling can be used. The training/test split is conducted separately within each class and then these subsamples are combined into the overall training and test set.
 
 ```{r}
 df1_train |> 
   summarise(n=n(), .by=Survived) |>
   mutate(prop = n/sum(n))
 ```
-
 
 For regression problems, the outcome data can be artificially binned into quartiles and then stratified sampling can be conducted four separate times. This is an effective method for keeping the distributions of the outcome similar between the training and test set.
 
@@ -179,25 +254,25 @@ Chapter 10 "[Resampling for Evaluating Performance]{.underline}" from *Tidy Mode
 
 \
 
-Resampling is conducted only on the training set, as you see in Figure \@ref(fig:resampling). 
+Resampling is conducted only on the training set, as you see in Figure \@ref(fig:resampling).
 
 Resampling methods generate different versions of our training set that can be used to simulate how well models would perform on new data. A resampling scheme generates a subset of the data to be used for modeling and another that is used for measuring performance. Here, we will refer to the former as the “analysis set” and the latter as the “assessment set”. They are roughly analogous to the training and test sets. A graphic of an example data hierarchy with three resamples is shown in Figure \@ref(fig:resampling).
 
-```{r resampling, echo=FALSE, fig.cap="*A diagram of typical data usage with B resamples of the training data*", out.width=600}
+```{r resampling, echo=FALSE, fig.cap="*A diagram of typical data usage with B resamples of the training data*", out.width=600, fig.align="center"}
 knitr::include_graphics(".imgs/01_resampling.png")
 ```
 
 \
 
-Before proceeding, we should be aware of what is being resampled. The *independent experimental* unit is the unit of data that is as statistically independent as possible from the other data. For example, for the Titanic data, it would be reasonable to consider each passenger to be independent of the other passengers. Since passengers are contained in rows of the data, each row is allocated to either the analysis or assessment sets. However, consider a situation where a company’s customer is the independent unit but the data set contains multiple rows per customer. In this case, each customer would be allotted to the analysis or assessment sets and all of their corresponding rows move with them. 
+Before proceeding, we should be aware of what is being resampled. The *independent experimental* unit is the unit of data that is as statistically independent as possible from the other data. For example, for the Titanic data, it would be reasonable to consider each passenger to be independent of the other passengers. Since passengers are contained in rows of the data, each row is allocated to either the analysis or assessment sets. However, consider a situation where a company’s customer is the independent unit but the data set contains multiple rows per customer. In this case, each customer would be allotted to the analysis or assessment sets and all of their corresponding rows move with them.
 
 \
 
 Cross-validation is a well established resampling method. While there are a number of variations, the most common cross-validation method is **V-fold cross-validation**. Simple V-fold cross-validation creates $V$ different, randomly selected, versions of the original training set (called the folds) that have roughly equal size.
 
-For illustration, $V = 3$ is shown in Figure \@ref(fig:cv1) for a data set of 30 training set observations with random fold allocations. The number inside the symbols is the observation id. The color of the symbols represents their randomly assigned folds. 
+For illustration, $V = 3$ is shown in Figure \@ref(fig:cv1) for a data set of 30 training set observations with random fold allocations. The number inside the symbols is the observation id. The color of the symbols represents their randomly assigned folds.
 
-```{r cv1, echo=FALSE, fig.cap="*A diagram of 3-fold cross-validation for a training set containing 30 observations*", out.width=400,fig.align="center"}
+```{r cv1, echo=FALSE, fig.cap="*A diagram of 3-fold cross-validation for a training set containing 30 observations*", out.width=400, fig.align="center"}
 knitr::include_graphics(".imgs/02_crossValidation.png")
 ```
 
@@ -205,7 +280,7 @@ knitr::include_graphics(".imgs/02_crossValidation.png")
 
 For this hypothetical three-fold cross-validation, the three iterations of resampling are illustrated in Figure \@ref(fig:cv2). For each resampling iteration, one fold with 10 observations is held out for assessment statistics and the remaining folds are used to train the model. Note that this ensures the assessment sets are mutually exclusive and contain different instances. This process continues for each fold so that three models produce three sets of performance statistics.
 
-```{r cv2, echo=FALSE, fig.cap="*Three iterations of the three-fold cross-validation*", out.width=550}
+```{r cv2, echo=FALSE, fig.cap="*Three iterations of the three-fold cross-validation*", out.width=550, fig.align="center"}
 knitr::include_graphics(".imgs/03_crossValidation.png")
 ```
 
@@ -221,22 +296,21 @@ What are the effects of changing $V$? Larger $V$ values result in resampling est
 
 One downside to basic V-fold cross-validation is that, depending on data size or other characteristics, it may be relatively noisier (i.e., have more variability) than other resampling schemes. As with many statistical problems, one way to reduce noise is to gather more data. For cross-validation, this means averaging more than $V$ statistics.
 
-One way to compensate for this is to conduct **repeated V-fold cross-validation**. To create $R$ repeats of V-fold cross-validation, the same fold generation process is done $R$ times to generate $R$ collections of $V$ partitions. Now, instead of averaging $V$ statistics, $V×R$ statistics are averaged to estimate performance. Due to the Central Limit Theorem, the summary statistics from each model tend toward a normal distribution, as long as we have a lot of data relative to $V×R$. 
+One way to compensate for this is to conduct **repeated V-fold cross-validation**. To create $R$ repeats of V-fold cross-validation, the same fold generation process is done $R$ times to generate $R$ collections of $V$ partitions. Now, instead of averaging $V$ statistics, $V×R$ statistics are averaged to estimate performance. Due to the Central Limit Theorem, the summary statistics from each model tend toward a normal distribution, as long as we have a lot of data relative to $V×R$.
 
-For example, Figure \@ref(fig:repeatedcv) show how quickly the standard error decreases with 1 to 10 Replicates on a dataset where 10-fold cross-validation uses assessment sets that contain roughly 234 observations. With simple 10-fold cross-validation (1 Replicate), the standard error of the mean RMSE is $σ/\sqrt 10$. If this is too noisy, repeats reduce the standard error to $σ/\sqrt{10R}$. 
+For example, Figure \@ref(fig:repeatedcv) show how quickly the standard error decreases with 1 to 10 Replicates on a dataset where 10-fold cross-validation uses assessment sets that contain roughly 234 observations. With simple 10-fold cross-validation (1 Replicate), the standard error of the mean RMSE is $σ/\sqrt 10$. If this is too noisy, repeats reduce the standard error to $σ/\sqrt{10R}$.
 
-```{r repeatedcv, echo=FALSE, fig.cap="*The standard error of the mean RMSE decreases with the number of cross-validation replicates with assessment sets around 234 observations.*", out.width=600}
+```{r repeatedcv, echo=FALSE, fig.cap="*The standard error of the mean RMSE decreases with the number of cross-validation replicates with assessment sets around 234 observations.*", out.width=500, fig.align="center"}
 knitr::include_graphics(".imgs/04_crossValidation.png")
 ```
 
 \
-  
+
 Since more data are being averaged, the reduction in the variance of the final average decreases and the final average is more stable. Again, the noisiness of this procedure is relative and, as one might expect, is driven by the amount of data in the assessment set. Larger numbers of replicates tend to have less impact on the standard error. However, if the baseline value of the standard variance $\sigma$ is impractically large, the diminishing returns on replication may still be worth the extra computational costs.
 
 One other variation, **leave-one-out cross-validation**, has $V$ equal to the size of the training set. This is a somewhat deprecated technique and may only be useful when the training set size is extremely small.
 
 Another variant of V-fold cross-validation is **Monte Carlo cross-validation**. Like V-fold cross-validation, it allocates a fixed proportion of data to the assessment sets. The difference between MCCV and regular cross-validation is that, for MCCV, this proportion of the data is randomly selected each time. This results in assessment sets that are not mutually exclusive, i.e. some of the same data points are used in different assessment sets. This is useful when the data set is large and the computational cost of creating $V$ mutually exclusive assessment sets is prohibitive. The downside is that the assessment sets are not as independent as in V-fold cross-validation.
-
 
 \
 
@@ -245,10 +319,9 @@ Another variant of V-fold cross-validation is **Monte Carlo cross-validation**. 
 Note that when the outcome is categorical, stratified splitting techniques can also be applied to make sure that the analysis and assessment sets produce the same frequency distribution of the outcome. Again, this is a good idea when a continuous outcome is skewed or a categorical outcome is imbalanced, but is unlikely to be problematic otherwise.
 
 ```{r}
-set.seed(1001)
-df2_folds <- vfold_cv(df1_train, v=10, strata=Survived)
+set.seed(888)
+df2_folds <- vfold_cv(df1_train, v=10, strata=Survived, repeats=5)
 ```
-
 
 \
 
@@ -259,7 +332,6 @@ df2_folds$splits[[1]] |> analysis() |>
   summarise(n=n(), .by=Survived) |> 
   mutate(prop = n/sum(n))
 ```
-
 
 \
 
@@ -274,20 +346,19 @@ Feature engineering entails reformatting predictor values to make them easier fo
 
 Take the location of a house as a more involved example. There are a variety of ways that this spatial information can be exposed to a model, including neighborhood (a categorical measure), longitude/latitude, distance to the nearest school or university, and so on. When choosing how to encode these data in modeling, we might choose an option we believe is most associated with the outcome. The original format of the data, for example numeric (e.g., distance) versus categorical (e.g., neighborhood), is also a driving factor in feature engineering choices.
 
-
 Other examples of feature engineering to build better features for modeling include:
 
-*  Correlation between predictors can be reduced via feature extraction or the removal of some predictors.
+-   Correlation between predictors can be reduced via feature extraction or the removal of some predictors.
 
-*  Models that use variance-type measures may benefit from coercing the distribution of some skewed predictors to be symmetric by estimating a transformation.
+-   Models that use variance-type measures may benefit from coercing the distribution of some skewed predictors to be symmetric by estimating a transformation.
 
-*  Reformatting may be required by a specific modeling technique. Some models use geometric distance metrics and, consequently, numeric predictors should be centered and scaled so that they are all in the same units. Otherwise, the distance values would be biased by the scale of each column.
+-   Reformatting may be required by a specific modeling technique. Some models use geometric distance metrics and, consequently, numeric predictors should be centered and scaled so that they are all in the same units. Otherwise, the distance values would be biased by the scale of each column.
 
 Different models have different preprocessing requirements and some, such as tree-based models, require very little preprocessing at all.
 
 \
 
-A recipe is an object that defines a series of steps for data processing. Unlike making transformations directly in the formula inside a modeling function, the recipe specifies and makes explicit the steps via `step_*()` functions without immediately executing them; it is only a specification of what should be done. This way, the same recipe can be used on multiple modeling functions and the steps can be easily modified. 
+A recipe is an object that defines a series of steps for data processing. Unlike making transformations directly in the formula inside a modeling function, the recipe specifies and makes explicit the steps via `step_*()` functions without immediately executing them; it is only a specification of what should be done. This way, the same recipe can be used on multiple modeling functions and the steps can be easily modified.
 
 This is useful because the type of preprocessing needed depends on the type of model being fit. For example, models that use distance functions or dot products (neural networks, KNN, and support vector machines) should have all of their predictors on the same scale so that distance is measured appropriately, so they require predictors that have been centered and scaled. Therefore, their workflows will require recipes with these preprocessing steps.
 
@@ -295,17 +366,17 @@ In contrast, tree-based models (e.g., decision trees, random forests, and gradie
 
 Figure \@ref(fig:preproc_recipe) shows the baseline levels of preprocessing that are needed for various model functions. The preprocessing methods are categorized as:
 
-*  dummy: Do qualitative predictors require a numeric encoding (e.g., via dummy variables or other methods)?
+-   dummy: Do qualitative predictors require a numeric encoding (e.g., via dummy variables or other methods)?
 
-*  zv: Should columns with a single unique value be removed?
+-   zv: Should columns with a single unique value be removed?
 
-*  impute: If some predictors are missing, should they be estimated via imputation?
+-   impute: If some predictors are missing, should they be estimated via imputation?
 
-*  decorrelate: If there are correlated predictors, should this correlation be mitigated? This might mean filtering out predictors, using principal component analysis, or a model-based technique (e.g., regularization).
+-   decorrelate: If there are correlated predictors, should this correlation be mitigated? This might mean filtering out predictors, using principal component analysis, or a model-based technique (e.g., regularization).
 
-*  normalize: Should predictors be centered and scaled?
+-   normalize: Should predictors be centered and scaled?
 
-*  transform: Is it helpful to transform predictors to be more symmetric?
+-   transform: Is it helpful to transform predictors to be more symmetric?
 
 The information below is not exhaustive and may depend on the specific implementation. For example, as noted below the table, some models may not require a particular preprocessing operation but the implementation may require it. In the table, $✔$ indicates that the method is required for the model and $×$ indicates that it is not. The $◌$ symbol means that the model may be helped by the technique but it is not required.
 
@@ -315,78 +386,488 @@ knitr::include_graphics(".imgs/preproc_req_by_model.png")
 
 Footnotes:
 
-1. Decorrelating predictors may not help improve performance. However, fewer correlated predictors can improve the estimation of variance importance scores (see [The dilution effect of random forest permutation importance scores when redundant variables are added to the model](https://bookdown.org/max/FES/recursive-feature-elimination.html#fig:greedy-rf-imp) of [M. Kuhn and Johnson (2020)](kuhn2020)). Essentially, the selection of highly correlated predictors is almost random.
+1.  Decorrelating predictors may not help improve performance. However, fewer correlated predictors can improve the estimation of variance importance scores (see [The dilution effect of random forest permutation importance scores when redundant variables are added to the model](https://bookdown.org/max/FES/recursive-feature-elimination.html#fig:greedy-rf-imp) of [M. Kuhn and Johnson (2020)](kuhn2020)). Essentially, the selection of highly correlated predictors is almost random.
 
-2. The needed preprocessing for these models depends on the implementation. Specifically: (a) Theoretically, any tree-based model does not require imputation. However, many tree ensemble implementations require imputation; (b) While tree-based boosting methods generally do not require the creation of dummy variables, models using the `xgboost` engine do.
+2.  The needed preprocessing for these models depends on the implementation. Specifically: (a) Theoretically, any tree-based model does not require imputation. However, many tree ensemble implementations require imputation; (b) While tree-based boosting methods generally do not require the creation of dummy variables, models using the `xgboost` engine do.
 
 \
 
-To learn more about each of these models, and others that might be available, see https://www.tidymodels.org/find/parsnip/.
+To learn more about each of these models, and others that might be available, see <https://www.tidymodels.org/find/parsnip/>.
 
+\
+
+**Create recipe(s) for preprocessing the data**
 
 ```{r}
-# recipe_dt_rf <- recipe(Survived ~ ., data=df1_train)
+rec_trees_na_omitted <- recipe(Survived ~ ., data=df1_train) |> 
+  update_role(PassengerId, new_role="ID") |> 
+  step_naomit(all_predictors(), skip=F)
+
+rec_trees <- recipe(Survived ~ ., data=df1_train) |> 
+  update_role(PassengerId, new_role="ID")
 ```
 
 \
 
-# Model specs and resampling
+# Models
+
+\
+
+## Decision Tree
+
+Chapter 10.3 Decision Trees from Practical Machine Learning with R ([Lange 2024](#lange2024))\
+
+\
+
+A Decision Tree machine learning model can be used for classification and regression tasks.
+
+```{r}
+tree_spec <- 
+  decision_tree(tree_depth=3) |>
+  set_engine("rpart") |>
+  set_mode("classification")
+
+tree_fit <- 
+  workflow() |>
+  add_model(tree_spec) |> 
+  add_recipe(rec_trees) |>
+  fit(data=df1_train)
+
+tree_fit
+```
+
+The argument `tree_depth=3` determines that our Decision Tree has three levels or ramifications. In a real-world application the `tree_depth` might be greater than three, but it should not be too high as this can cause overfitting.
+
+\
+
+**What is a decision tree?**
+
+A Decision Tree like the one in Figure \@ref(fig:dec_tree) consists of hierarchically organized nodes (the blue and green rectangles). It can be compared to an ancestry tree. The root node on top of the tree has no ancestors but is a parent to two children. Each of these children is a parent to two other children. This process continues until it stops at the bottom of the tree. The terminal nodes at the bottom have parents but no children.
+
+```{r dec_tree}
+# extracts the model from the workflow object and plots the decision tree
+extract_fit_engine(tree_fit) |> 
+  rpart.plot::rpart.plot(yes.text="YES", no.text="NO", roundint=FALSE)
+```
+
+\
+
+In contrast to an ancestry tree, a Decision Tree guides observations from a dataset starting at the root node to one of the terminal nodes. Decision rules are used after each parent node to determine to which of the following two child nodes an observation is moved on its way towards the terminal nodes.
+
+A decision rule determines if an observation is moved to the left child or to the right child of a parent node. A decision rule states a condition such as `Sex=male` (see the first decision rule between the root node and its two children in Figure \@ref(fig:dec_tree)). The condition is either fulfilled (YES) or not fulfilled (NO). If the condition is fulfilled,the observation moves to the left child node. Otherwise, it moves to the right child node.
+
+The three labels inside the each node denote (from bottom to top):
+
+-   the percentage of the dataset that falls into the node (in our case the proportion of passengers);
+-   the probability that the observations in that node will have a positive outome (in our case, the survival rate of Titanic passengers); and
+-   whether or not the prediction of a new observation falling into that node would be positive (TRUE) or negative (FALSE).
+
+After all observations from the training set descend through the tree, they end up in one of the terminal nodes. The percentages of training data in the six terminal nodes add up to 100%.
+
+Note that not all decision rules and nodes from the Decision Tree in Figure \@ref(fig:dec_tree) make sense — a major weakness of Decision Trees.
+
+\
+
+### Performance metrics
+
+From Federico Comotto's TDS article [Evaluation metrics: leave your comfort zone and try MCC and Brier Score](https://towardsdatascience.com/evaluation-metrics-leave-your-comfort-zone-and-try-mcc-and-brier-score-86307fb1236a) on Jan 8, 2022.\
+
 
 
 ```{r}
-# spec_dt <- decision_tree() |> 
-#   set_engine("rpart") |> 
-#   set_mode("classification")
-# 
-# spec_rf <- rand_forest() |>
-#   set_engine("ranger") |>
-#   set_mode("classification")
+tree_test <- 
+  augment(tree_fit, new_data=df1_test) |> 
+  mutate(Survived = fct_relevel(Survived, "TRUE", "FALSE"),
+         .pred_class = fct_relevel(.pred_class, "TRUE", "FALSE")) 
+
+conf_mat(tree_test, truth=Survived, estimate=.pred_class)
+```
+
+\
+
+```{r}
+class_and_probs_metrics <- metric_set(accuracy, sensitivity, specificity, 
+                                      precision, recall, 
+                                      roc_auc, brier_class)
+
+(tree_metrics <- tree_test |> 
+    class_and_probs_metrics(truth=Survived, .pred_TRUE, estimate=.pred_class) |> 
+    pivot_wider(names_from=.metric, values_from=.estimate) |> 
+    mutate(f1 = 2 * ((precision * recall) / (precision + recall))) |> 
+    pivot_longer(-.estimator, names_to=".metric", values_to=".estimate") |> 
+    mutate(.estimate = round(.estimate, 4)))
+```
+
+\
+
+[Accuracy]{.underline} it is the proportion of correct predictions (TP + TN) among the total number of cases examined.
+
+[Precision]{.underline} is the proportion of correct positive predictions (TP) among the total number of positive predictions made by the model (TP + FP).
+
+[Recall]{.underline} is the proportion of correct positive predictions (TP) among the total number of positive samples in the test set (TP + FN).
+
+[F1 score]{.underline} is the harmonic mean of precision and recall. And its evolved version: Weighted F1 score, which allows the analyst to assign weights to precision and recall.
+
+[AUC]{.underline} stands for “Area under the ROC Curve” and it measures the area under a plot showing the performance of a classification model at all classification thresholds.
+
+[Brier Score]{.underline} determines the accuracy of a predicted probability score. BS is the mean squared error, applied to predicted probabilities.
+
+
+$$
+BS = \frac{1}{N} \sum_{i=1}^{N} (f_i - o_i)^2
+$$
+
+
+
+With an overall accuracy of `r scales::percent(filter(tree_metrics, .metric=="accuracy")$.estimate, accuracy=1)`, the prediction results are not bad. The model worked particularly well in predicting passengers that did not survive (negative class; specificity = `r scales::percent(filter(tree_metrics, .metric=="specificity")$.estimate, accuracy=1)`). As you can see, specificity is higher than sensitivity. However, the difference is not big enough to consider the dataset as unbalanced.
+
+**How does the Optimizer determine the decision rules?**
+
+Decision rules are determined from the top of the Decision Tree down to the bottom. The Optimizer starts with finding the best decision rule for the root node, then moves down to the child nodes and finds the decision rule for each of the child nodes and then for the child nodes of the child nodes. The process stops when either the maximum level set with the hyper-parameter level is reached (level=3 in our case) or when splitting a node further no longer increases the predictive quality.
+
+Decision rules of the previous level are never reversed, even if this would allow for a better decision on the current level. There is no turning back to reverse a decision rule on a previous level. This type of algorithm is called a greedy algorithm.
+
+Decision rules have two components: The splitting variable and the splitting value, in the case of continuous variables. To find the best splitting variable and the best splitting value, the Optimizer compares all combinations of splitting variables and splitting values. The splitting variable and splitting value that result in the best split are chosen. The best split is the split that minimizes a specific pre-determined criteria.
+
+The splitting variable and splitting value are chosen in such a way that the resulting child nodes are as pure as possible. A pure node contains only observations of the same class. The purity of a node can be measured by the Gini impurity, entropy or Information Gain. Different implementations of decision trees can use different criteria and the `rpart` engine uses Gini impurity. Gini impurity is the most common measure of node purity.
+
+Gini impurity for an individual child node and estimates the probability that two entities taken at random from the dataset of interest (with replacement) represent different types. Mathematically, it is calculated as the product of the proportions for the observation for the two different classes ($P_{surv}$ and $P_{not\,surv}$):
+
+$$
+Gini^{imp} = 2 * P_{surv} * P_{not\,surv}
+$$
+
+\
+
+**What are the limitations of decision trees?**
+
+Interpreting Decision Trees is easy and straightforward. However, we have already seen that there's no guarantee that all decision rules will necessarily make logical sense. Additionally, a decision tree is extremely sensitive to small changes in the training data. 
+
+You can see this if you run the model again with a different seed. You will notice that the predictive performance metrics will not change very much. However, the structure of the Decision Tree will be different and this makes real-life interpretation questionable. 
+
+the fact that the structure of Decision Trees reacts so sensitively to small changes is a major obstacle to use DecisionTrees for solving real-world problems. Imagine an irresponsible researcher who changes the `set.seed()` value until the structure of the Decision Tree reflects what they would like to see.
+
+Why study Decision Trees if their interpretability is flawed and their predictive quality, although not bad, can be exceeded by other machine learning models?
+
+The reason is that combining several Decision Trees gives us a very strong predictive quality with stability (low variance). The combination of machine learning models of the same or different types is called an ensemble. Combining many Decision Trees into one ensemble is what Random Forest and Boosting Trees models do.
+
+\
+
+## Random Forest
+
+Chapter 10.4 Random Forest from Practical Machine Learning with R ([Lange 2024](#lange2024))\
+
+\
+
+A Random Forest is an ensemble model that can be used for classification and regression tasks. 
+
+A Random Forest consists of multiple - hundreds or thousands - slightly different decision trees that produce slightly different predictions. The final prediction of the Random Forest is the aggregation of the predictions of all the decision trees. In a regression, the prediction is the mean of the predictions of all the decision trees. In a binary classification, the prediction is the class predicted by the majority of the predictions of all the decision trees. Sometimes this is called the vote of the decision trees for a given class.
+
+In order to generate different predictions the decision trees in a random forest must be diverse. Two strategies are used to create diversity:
+
+*  **Random subspace**: Every time a new decision tree is created, a random subset of the predictors is selected. This means that each decision tree is created using a different set of predictors. The number of predictors in the random sample is a [hyper-parameter]{.underline} of the Random Forest model. The most common default value is the square root of the number of predictors in the dataset.
+
+*  **Bootstrap (Bagging)**: Every time a new decision tree is created, a random sample of the training data is selected **with replacement** until the new training dataset has the same number of observations as the original. This means that each decision tree is created using a different set of observations. 
+
+Figure \@ref(fig:bagging) shows the bootstrap method as it is applied in Random Forests. Each bootstrap sample will be used to generate an individual tree. Note that some observations from the training data are not included in the bootstrap sample. These observations are called out-of-bag (OOB) samples. The OOB samples are used to estimate the predictive quality of the specific decision tree. The expected number of observations in the OOB data is about 1/3 of the training data.
+
+```{r bagging, echo=FALSE, fig.cap="*Bootstrapping and Out-of-Bag (OOB) samples in Random Forest*", out.width=600, fig.align="center"}
+knitr::include_graphics(".imgs/rf_bagging.png")
+```
+
+\
+
+The default setting for number of `trees` in `ranger` implementation of RF is 500. However, the number of trees is a [hyper-parameter]{.underline} and can be optimized. In contrast to the hyper-parameters `min_n` and `mtry`, a high number of `trees` in a Random Forest cannot cause overfitting. The number of trees is a trade-off between computational cost and predictive quality. The more trees, the better the predictive quality but the longer the computational time.
+
+
+
+
+```{r}
+rf_spec <- 
+  rand_forest(
+    mtry=2,   # nr of predictors that will be randomly selected, defaults to sqrt(ncol(x))
+    min_n=10, # target nr of obs in node to split, defaults to 10/classification and 5/regression
+    trees=500
+  ) |>
+  set_engine("ranger", num.threads=parallel::detectCores()) |>
+  set_mode("classification")
+
+set.seed(2021)
+rf_fit <- 
+  workflow() |>
+  add_recipe(rec_trees_na_omitted) |>
+  add_model(rf_spec) |>
+  fit(df1_train)
+
+rf_fit
+```
+\
+
+The performance on the OOB validation data is ok, but the real challenge is to predict the test data. 
+
+
+```{r}
+rf_test <- 
+  augment(rf_fit, new_data=df1_test) |> 
+  mutate(Survived = fct_relevel(Survived, "TRUE", "FALSE"),
+         .pred_class = fct_relevel(.pred_class, "TRUE", "FALSE")) 
+
+conf_mat(rf_test, truth=Survived, estimate=.pred_class)
+```
+
+\
+
+```{r}
+(rf_metrics <- rf_test |> 
+   class_and_probs_metrics(truth=Survived, .pred_TRUE, estimate=.pred_class) |> 
+   pivot_wider(names_from=.metric, values_from=.estimate) |> 
+   mutate(f1 = 2 * ((precision * recall) / (precision + recall))) |> 
+   pivot_longer(-.estimator, names_to=".metric", values_to=".estimate") |> 
+   mutate(.estimate = round(.estimate, 4)))
+```
+
+
+
+
+\
+
+## Neural Network
+
+```{r}
+# nnet_spec <- 
+#   mlp(hidden_units=tune(), penalty=tune(), epochs=tune()) |> 
+#    set_engine("nnet", MaxNWts=2600) |> 
+#    set_mode("classification")
+```
+
+\
+
+The analysis in M. Kuhn and Johnson (2013) specifies that the neural network should have up to 27 hidden units in the layer. The extract_parameter_set_dials() function extracts the parameter set, which we modify to have the correct parameter range:
+
+```{r}
+# nnet_param <- nnet_spec |> 
+#    extract_parameter_set_dials() |> 
+#    update(hidden_units = hidden_units(c(1, 27)))
 ```
 
 \
 
 # Put it all together
 
+Chapter 15 "[Screening many models]{.underline}" from *Tidy Modeling with R* ([Kuhn & Johnson, 2023](#kuhn2023))
+
+\
+
+**Creating a set of workflows**
+
+Creating a set of workflows is a way to organize the modeling process. This is particularly useful when there are many models to evaluate. The `workflow_set()` function creates a tibble with a list of preprocessor and model combinations. 
 
 ```{r}
-# workflow_set <- workflow_set(
-#   list(recipe_dt_rf),
-#   list(spec_dt, spec_rf),
-#   cross = TRUE
-# )
+wfs_trees <- 
+  workflow_set(
+    preproc = list(recNAomit = rec_trees_na_omitted),
+    models = list(tree_spec, rf_spec)
+  )
+
+wfs_trees
+```
+
+Since there is only a single preprocessor, `workflow_set()` creates a set of workflows with two workflows. If the preprocessor contained more than one entry, the function would create all combinations of preprocessors and models.
+
+The `wflow_id` column is automatically created but can be modified using a call to `mutate()`. 
+
+The `info` column contains a tibble with some identifiers and the workflow object. 
+
+The `option` column is a placeholder for any arguments to use when we evaluate the workflow. When a function from the `tune` or `finetune` package is used to tune (or resample) a workflow, this argument will be used. 
+
+The `result` column is a placeholder for the output of the tuning or resampling functions.
+
+For example, to add the neural network parameter object:
+
+```         
+workflow_set1 <- workflow_set1 |>  
+   option_add(param_info = nnet_param, id = "normalized_neural_network")
+
+workflow_set1
+#> # A workflow set/tibble: 4 × 4
+#>   wflow_id                  info             option    result    
+#>   <chr>                     <list>           <list>    <list>    
+#> 1 normalized_SVM_radial     <tibble [1 × 4]> <opts[0]> <list [0]>
+#> 2 normalized_SVM_poly       <tibble [1 × 4]> <opts[0]> <list [0]>
+#> 3 normalized_KNN            <tibble [1 × 4]> <opts[0]> <list [0]>
+#> 4 normalized_neural_network <tibble [1 × 4]> <opts[1]> <list [0]>
 ```
 
 \
 
-# Fit the models
+A specific workflow can be extracted like this:
 
 
 ```{r}
-# df3_results <- workflow_map(workflow_set, "fit_resamples", resamples = df2_folds)
-```
-
-
-```{r}
-# autoplot(df3_results)
+wfs_trees |> extract_workflow(id = "recNAomit_rand_forest")
 ```
 
 
 \
 
-# Validate the models
+Additionally, you can create another workflow set that uses `workflow_variables()` with `dplyr` selectors for the outcome and predictors:
+
+```{r}
+model_vars <- workflow_variables(outcomes = Survived, 
+                                 predictors = c(-PassengerId))
+
+wfs_no_preproc <- 
+  workflow_set(
+    preproc = list(recSimple = model_vars), 
+    models = list(tree_spec)
+  )
+
+wfs_no_preproc
+```
 
 \
 
-Predict
+These sets of workflows are tibbles with the extra class of `workflow_set`. Row binding does not affect the state of the sets and the result is itself a `workflow_set`:
 
 ```{r}
+wfs_all <- bind_rows(wfs_trees, wfs_no_preproc)
 
+wfs_all
+```
+
+\
+
+## Screening models
+
+To evaluate their performance, we can use the standard tuning or resampling functions (e.g., `tune_grid()` and so on). The `workflow_map()` function will apply a given function to all of the workflows in the set; the default function is `tune_grid()`.
+
+For this example, grid search is applied to each workflow using up to 25 different parameter candidates. There are a set of common options to use with each execution of `tune_grid()`. For example, in the following code we will use the same resampling and control objects for each workflow, along with a grid size of $25$. The `workflow_map()` function has an additional argument called `seed`, which is used to ensure that each execution of `tune_grid()` consumes the same random numbers.
+
+```{r}
+grid_ctrl <-
+   control_grid(
+      save_pred = TRUE,
+      parallel_over = "everything",
+      save_workflow = TRUE
+   )
+
+grid_results <- wfs_all |> 
+  workflow_map(
+    fn = "tune_grid",
+    control = grid_ctrl,
+    resamples = df2_folds,
+    seed = 1503,           # to ensure each execution of `tune_grid()` uses the same random numbers
+    grid = 25,
+    verbose=T
+  )
+```
+
+\
+
+`grid_results` is an updated `workflow_set` object. The results show that the `option` and `result` columns have been updated:
+
+```{r}
+grid_results
+```
+
+The `option` column now contains all of the options that we used in the `workflow_map()` call. This makes our results reproducible. In the result columns, the “`tune[+]`” and “`rsmp[+]`” notations mean that the object had no issues. A value such as “`tune[x]`” occurs if all of the models failed for some reason.
+
+There are a few convenience functions for examining grid results. The `rank_results()` function will order the models by some performance metric. By default, it uses the first metric in the metric set (in this case `accuracy`). Let’s `filter()` to look only at AUC:
+
+```{r}
+grid_results |>
+  rank_results() |>
+  filter(.metric == "roc_auc") |>
+  select(model, .config, roc_auc=mean, rank)
+```
+
+Also by default, `rank_results()` ranks all of the candidate sets; that’s why the same model can show up multiple times in the output. An option, called select_best, can be used to rank the models using their best tuning parameter combination.
+
+The `autoplot()` method plots the rankings; it also has a select_best argument. The plot in Figure \@ref(fig:grid_results_plot) visualizes the best results for each model and is generated with:
+
+```{r grid_results_plot, fig.cap="*Model selection after resampling based on AUC performance*", fig.width=5, fig.asp=.5}
+autoplot(
+  grid_results,
+  rank_metric = "roc_auc",  # <- how to order models
+  metric = "roc_auc",       # <- which metric to visualize
+  select_best = TRUE        # <- one point per workflow
+) +
+  coord_flip() +
+  geom_text(aes(y=mean-.02, label=wflow_id), hjust=1, size=3) +
+  scale_x_reverse(breaks=1:3, expand=expansion(mult=c(.2,.2))) +
+  scale_y_continuous(expand=expansion(mult=c(0,0)), limits=c(0.7, 1)) +
+  scale_color_brewer(palette="Dark2") +
+  theme(panel.grid.major.y=element_blank()) +
+  theme(legend.position = "none") +
+  labs(title="Model selection after resampling - AUC",
+       subtitle="10-fold cross-validation with 5 repeats",
+       y=NULL)
+```
+
+\
+
+In case you want to see the tuning parameter results for a specific model, like Figure \@ref(), the id argument can take a single value from the wflow_id column for which model to plot:
+
+```
+autoplot(grid_results, id="recNAomit_rand_forest", metric = "roc_auc")
+```
+
+There are also methods for collect_predictions() and collect_metrics(). The former collects the predictions from the resampling process and the latter collects the performance metrics. The results are stored in a tibble with a list column that contains the predictions or metrics for each resample.
+
+
+\
+
+# Finalizing
+
+The process of choosing the final model and fitting it on the training set is straightforward. The first step is to pick a workflow to finalize. The following code extracts the best model from the set, updates the parameters with the numerically best settings, and fits to the training set:
+
+```{r}
+final_fit <- 
+  grid_results |> 
+  extract_workflow("recNAomit_rand_forest") %>% 
+  # Include the best results for hyper-parameters
+  finalize_workflow(
+    grid_results |>  
+      extract_workflow_set_result("recNAomit_rand_forest") |> 
+      select_best(metric = "roc_auc")
+  ) |> 
+  last_fit(split = df1_split)
+
+final_fit
 ```
 
 
 \
 
-Validate
+We can see the test set metrics results, and visualize the predictions in Figure 15.5.
+
+```{r}
+collect_metrics(final_fit)
+```
+
+```{r}
+final_test <- final_fit |> 
+  collect_predictions() |> 
+  mutate(Survived = fct_relevel(Survived, "TRUE", "FALSE"),
+         .pred_class = fct_relevel(.pred_class, "TRUE", "FALSE")) 
+
+conf_mat(final_test, truth=Survived, estimate=.pred_class)
+```
+
+\
+
+```{r}
+(final_metrics <- final_test |> 
+    class_and_probs_metrics(truth=Survived, .pred_TRUE, estimate=.pred_class) |> 
+    pivot_wider(names_from=.metric, values_from=.estimate) |> 
+    mutate(f1 = 2 * ((precision * recall) / (precision + recall))) |> 
+    pivot_longer(-.estimator, names_to=".metric", values_to=".estimate") |> 
+    mutate(.estimate = round(.estimate, 4)))
+```
+
+\
+
+Compare with results in standalone experiments without cross-validation?
 
 ```{r}
 
@@ -397,12 +878,14 @@ Validate
 
 # References {#refs}
 
+\
+Kuhn, M. e Johnson, K. 2013. [*Applied Predictive Modeling*]{.underline}. Springer. ISBN 978-1-4614-6848-6. [[online](https://link.springer.com/book/10.1007/978-1-4614-6849-3){#kuhn2013}]
 
 \
-Kuhn, M. e Johnson, K. 2013. [*Applied Predictive Modeling*]{.underline}. Springer. ISBN 978-1-4614-6848-6. [online](https://link.springer.com/book/10.1007/978-1-4614-6849-3){#kuhn2013}
+Kuhn, M. e Johnson, K. 2020. [*Feature Engineering and Selection: A Practical Approach for Predictive Models*]{.underline}. Taylor & Francis Group. [[online](https://bookdown.org/max/FES/){#kuhn2020}]
 
 \
-Kuhn, M. e Johnson, K. 2020. [*Feature Engineering and Selection: A Practical Approach for Predictive Models*]{.underline}. Taylor & Francis Group. [online](https://bookdown.org/max/FES/){#kuhn2020}
+Kuhn, M. e Johnson, K. 2023. [*Tidy Modeling with R*]{.underline}. Taylor & Francis Group. [[online](https://www.tmwr.org/){#kuhn2023}]
 
 \
-Kuhn, M. e Johnson, K. 2023. [*Tidy Modeling with R*]{.underline}. Taylor & Francis Group. [online](https://www.tmwr.org/){#kuhn2023}
+Lange, C. 2024. [*Practical Machine Learning with R: Tutorials and Case Studies (1st ed.)*]{.underline}. Chapman and Hall/CRC Press. DOI: [10.1201/9781003367147](https://doi.org/10.1201/9781003367147){#lange2024}
