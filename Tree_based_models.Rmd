@@ -64,7 +64,7 @@ tidyConfMat <- function(df) {
 plotConfMat <- function(df) {
   df |> 
     ggplot(aes(x, y)) +
-    geom_tile(aes(fill=gg.col), colour="white", alpha=.6) +
+    geom_tile(aes(fill=gg.col), colour="white", alpha=.7) +
     geom_text(aes(label=gg.lbl), size=3) +
     facet_wrap(~model, nrow=1) +
     scale_x_continuous(expand=expansion(mult=c(0,0)), breaks=NULL, position="top") +
@@ -85,7 +85,7 @@ print(sessionInfo(), locale=FALSE)
 
 \
 
-# Preprocessing
+# Load data
 
 **DATA DICTIONARY:**
 
@@ -250,7 +250,11 @@ ggbivariate(
 
 \
 
-# Splitting
+# Preprocessing
+
+\
+
+## Splitting
 
 Splitting the data into training and testing sets is a critical step in the modeling process. The training set is used to fit the model and the test set is used to estimate the model's performance on new data.
 
@@ -287,7 +291,7 @@ For regression problems, the outcome data can be artificially binned into quarti
 
 \
 
-# Resampling
+## Resampling
 
 Chapter 3.4 "[Resampling]{.underline}" from *Feature Engineering and Selection* ([Kuhn & Johnson, 2019](#kuhn2020))\
 Chapter 10 "[Resampling for Evaluating Performance]{.underline}" from *Tidy Modeling with R* ([Kuhn & Johnson, 2023](#kuhn2023))
@@ -352,30 +356,46 @@ One other variation, **leave-one-out cross-validation**, has $V$ equal to the si
 
 Another variant of V-fold cross-validation is **Monte Carlo cross-validation**. Like V-fold cross-validation, it allocates a fixed proportion of data to the assessment sets. The difference between MCCV and regular cross-validation is that, for MCCV, this proportion of the data is randomly selected each time. This results in assessment sets that are not mutually exclusive, i.e. some of the same data points are used in different assessment sets. This is useful when the data set is large and the computational cost of creating $V$ mutually exclusive assessment sets is prohibitive. The downside is that the assessment sets are not as independent as in V-fold cross-validation.
 
+
+Other resampling techniques:
+
+*  Validation set: A single validation set is created by randomly selecting a proportion of the training set. So, when using a validation set, the initial available data set is split into a training set, a validation set, and a test set. The model is fit on the training set and evaluated on the validation set during model screening and hyper-parameter tuning. This is a simple and computationally efficient method but has high variance. It is useful when the training set is large and the model is simple. 
+
+
+*  Bootstrapping: A bootstrap sample of the training set is a sample that is the same size as the training set but is drawn with replacement. This means that some training set data points are selected multiple times for the analysis set. Each data point has a 63.2% chance of inclusion in the training set at least once. The assessment set contains all of the training set samples that were not selected for the analysis set (on average, with 36.8% of the training set). Note that in this case the sizes of the assessment sets vary. When bootstrapping, the assessment set is often called the out-of-bag sample. 
+
+Bootstrap resampling was originally invented as a method for approximating the sampling distribution of statistics whose theoretical properties are intractable ([Davison and Hinkley 1997](#davidson1997)). Using it to estimate model performance is a secondary application. Bootstrapping is useful when the data set is small and the goal is to estimate the variability of a statistic. It is also useful when the data set is large but the model is complex and the goal is to estimate the variability of the model's performance.
+
+Bootstrap samples produce performance estimates that have very low variance (unlike cross-validation) but have significant pessimistic bias. This means that, if the true accuracy of a model is 90%, the bootstrap would tend to estimate accuracy to be less than 90%. The amount of bias cannot be empirically determined. Additionally, the amount of bias changes over the scale of the performance metric. For example, the bias is likely to be different when the accuracy is 90% versus when it is 70%.
+
+The bootstrap is also baked into the algorithm for many models. For example, the random forest model can contain 1,000 individual decision trees. Each tree is the product of a different bootstrap sample of the training set.
+
 \
 
-**Create stratified 10-fold cross-validation for Titanic dataset.**
+**Create resampling recipe for Titanic dataset.**
 
-Note that when the outcome is categorical, stratified splitting techniques can also be applied to make sure that the analysis and assessment sets produce the same frequency distribution of the outcome. Again, this is a good idea when a continuous outcome is skewed or a categorical outcome is imbalanced, but is unlikely to be problematic otherwise.
+Note that when the outcome is categorical, stratified splitting techniques can be applied to make sure that the analysis and assessment sets produce the same frequency distribution of the outcome. Again, this is a good idea when a continuous outcome is skewed or a categorical outcome is imbalanced, but is unlikely to be problematic otherwise.
 
 ```{r}
 set.seed(888)
-df2_folds <- vfold_cv(df1_train, v=10, strata=Survived, repeats=5)
+rec_bootstrap <- bootstraps(df1_train, times=25, strata=Survived)
+rec_bootstrap
 ```
 
 \
 
-Check the distribution of the outcome variable in the folds.
+The resulting object is a tibble containing each of the resampling splits defined in the function arguments. It's possible to extract the data from any one of the splits. In this case we can check, for example, the distribution of the outcome variable in the analysis set of the first split.
 
 ```{r}
-df2_folds$splits[[1]] |> analysis() |> 
+rec_bootstrap$splits[[1]] |> 
+  analysis() |> 
   summarise(n=n(), .by=Survived) |> 
   mutate(prop = n/sum(n))
 ```
 
 \
 
-# Feature engineering
+## Feature engineering
 
 Chapter 8 "[Feature Engineering with recipes]{.underline}" from *Tidy Modeling with R* ([Kuhn & Johnson, 2023](#kuhn2023))\
 Appendix A "[Recommended preprocessing]{.underline}" from *Tidy Modeling with R* ([Kuhn & Johnson, 2023](#kuhn2023))
@@ -514,7 +534,7 @@ From Federico Comotto's TDS article [Evaluation metrics: leave your comfort zone
 Select classification and probability metrics to evaluate all models.
 
 ```{r}
-class_and_probs_metrics <- metric_set(accuracy, roc_auc, f_meas, brier_class, 
+performance_metrics <- metric_set(accuracy, roc_auc, f_meas, brier_class, 
                                       sensitivity, specificity)
 ```
 
@@ -548,12 +568,12 @@ tree_test <- augment(tree_fit, new_data=df1_test)
 \
 
 ```{r fig.asp=1, fig.width=2}
-tree_conf_matrix <- conf_mat(tree_test, truth=Survived, estimate=.pred_class) |> 
+df3_conf_matrix <- conf_mat(tree_test, truth=Survived, estimate=.pred_class) |> 
   tidy() |> 
   tidyConfMat() |> 
   mutate(model="DecTree0")
 
-plotConfMat(tree_conf_matrix)
+plotConfMat(df3_conf_matrix)
 ```
 
 \
@@ -574,15 +594,15 @@ autoplot(tree_roc_curve, size=1.5) +
 \
 
 ```{r}
-(tree_metrics <- tree_test |> 
-    class_and_probs_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
+(df4_performance <- tree_test |> 
+    performance_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
     mutate(.estimate = round(.estimate, 4),
            model="DecTree0"))
 ```
 
 \
 
-With an overall accuracy of `r scales::percent(filter(tree_metrics, .metric=="accuracy")$.estimate, accuracy=1)`, the prediction results are not bad. The model worked particularly well in predicting passengers that did not survive (specificity = `r filter(tree_conf_matrix,category=="TN")$value`/(`r filter(tree_conf_matrix,category=="TN")$value`+`r filter(tree_conf_matrix,category=="FP")$value`) = `r scales::percent(filter(tree_metrics, .metric=="specificity")$.estimate)`). As you can see, specificity is higher than sensitivity. However, the difference is not big enough to consider the dataset as unbalanced.
+With an overall accuracy of `r scales::percent(filter(df4_performance, .metric=="accuracy")$.estimate, accuracy=1)`, the prediction results are not bad. The model worked particularly well in predicting passengers that did not survive (specificity = `r filter(df3_conf_matrix,category=="TN")$value`/(`r filter(df3_conf_matrix,category=="TN")$value`+`r filter(df3_conf_matrix,category=="FP")$value`) = `r scales::percent(filter(df4_performance, .metric=="specificity")$.estimate)`). As you can see, specificity is higher than sensitivity. However, the difference is not big enough to consider the dataset as unbalanced.
 
 \
 
@@ -717,11 +737,15 @@ Further reading:
 \
 
 ```{r fig.asp=1, fig.width=2}
-rf_conf_matrix <- conf_mat(rf_test, truth=Survived, estimate=.pred_class) |> 
-  tidy() |> tidyConfMat() |> 
-  mutate(model="RndFor0")
+df3_conf_matrix <- 
+  bind_rows(
+    df3_conf_matrix,
+    conf_mat(rf_test, truth=Survived, estimate=.pred_class) |> 
+      tidy() |> tidyConfMat() |> 
+      mutate(model="RndFor0")
+  )
 
-plotConfMat(rf_conf_matrix)
+plotConfMat(df3_conf_matrix)
 ```
 
 
@@ -741,10 +765,15 @@ autoplot(rf_roc_curve) +
 \
 
 ```{r}
-(rf_metrics <- rf_test |> 
-    class_and_probs_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
-    mutate(.estimate = round(.estimate, 4),
-           model="RndFor0"))
+df4_performance <- 
+   bind_rows(
+     df4_performance,
+     rf_test |> 
+       performance_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
+       mutate(.estimate = round(.estimate, 4),
+              model="RndFor0")
+   )
+df4_performance |> filter(model=="RndFor0")
 ```
 
 
@@ -754,12 +783,6 @@ autoplot(rf_roc_curve) +
 **Compare models**
 
 ```{r fig.width=3, fig.height=2}
-df3_conf_matrix <-  
-  bind_rows(
-    rf_conf_matrix,
-    tree_conf_matrix
-  )
-
 plotConfMat(df3_conf_matrix)
 ```
 
@@ -770,13 +793,13 @@ plotConfMat(df3_conf_matrix)
 p2 <- autoplot(rf_roc_curve) +
   scale_x_continuous(expand=expansion(mult=c(0,0))) +
   scale_y_continuous(expand=expansion(mult=c(0,0))) +
-  labs(title=glue::glue("Random Forest - AUC: {filter(rf_metrics, .metric=='roc_auc')$.estimate}"), 
+  labs(title=glue::glue("Random Forest - AUC: {filter(df4_performance, .metric=='roc_auc', model=='RndFor0')$.estimate}"), 
        x="False Positive Rate (specificity)", y="True Positive Rate (sensitivity)")
 
 p1 <- autoplot(tree_roc_curve) +
   scale_x_continuous(expand=expansion(mult=c(0,0))) +
   scale_y_continuous(expand=expansion(mult=c(0,0))) +
-  labs(title=glue::glue("Decision Tree - AUC: {filter(tree_metrics, .metric=='roc_auc')$.estimate}"), 
+  labs(title=glue::glue("Decision Tree - AUC: {filter(df4_performance, .metric=='roc_auc', model=='DecTree0')$.estimate}"), 
        x="False Positive Rate (specificity)", y="True Positive Rate (sensitivity)")
 
 p1 + p2 &
@@ -786,14 +809,8 @@ p1 + p2 &
 
 \
 
-```{r fig.width=6}
-df4_metrics <- 
-  bind_rows(
-    rf_metrics,
-    tree_metrics
-  )
-
-df4_metrics |> 
+```{r fig.width=6, fig.height=3.5}
+df4_performance |> 
   ggplot(aes(x=model, y=.estimate, group=.metric)) +
   geom_line(aes(color=.metric), linewidth=.7) + geom_point(aes(color=.metric)) +
   geom_text(aes(label=scales::number(.estimate, accuracy=.01)), vjust=-1, size=3) +
@@ -843,14 +860,14 @@ Chapter 15 "[Screening many models]{.underline}" from *Tidy Modeling with R* ([K
 Creating a set of workflows is a way to organize the modeling process. This is particularly useful when there are many models to evaluate. The `workflow_set()` function creates a tibble with a list of preprocessor and model combinations. You can combine the recipe objects with the corresponding model specifications. By default the `cross` parameter is set to `TRUE`, which makes each recipe object match with each model specification. In this case it is set to `FALSE` because decision trees don't need missing values to be removed from the training set.
 
 ```{r}
-wfs_trees <- 
+wfs_0 <- 
   workflow_set(
     preproc = list(recSimple = rec_simple, recNAomit = rec_na_omitted),
     models = list(tree_spec, rf_spec),
     cross=FALSE
   )
 
-wfs_trees
+wfs_0
 ```
 
 Since there is only a single preprocessor for each model, `workflow_set()` creates a set with two workflows. 
@@ -885,7 +902,7 @@ A specific workflow can be extracted like this:
 
 
 ```{r}
-wfs_trees |> extract_workflow(id = "recNAomit_rand_forest")
+wfs_0 |> extract_workflow(id = "recNAomit_rand_forest")
 ```
 
 
@@ -900,15 +917,15 @@ The `workflow_map()` function applies a given function to all of the workflows i
 ```{r}
 wfs_results <- 
   workflow_map(
-    wfs_trees, "fit_resamples",
-    resamples = df2_folds,
+    wfs_0, "fit_resamples",
+    resamples = rec_bootstrap,
     seed = 1503   # to ensure each execution of the function uses the same random numbers
   )
 ```
 
 \
 
-This will loop over all the workflows in the `workflow_set` object, applying the `fit_resamples` function to each one, using the `df2_folds` cross-validation specifications. The results of each of these runs is stored under the respective model row in a new updated `workflow_set` object. 
+This will loop over all the workflows in the `workflow_set` object, applying the `fit_resamples` function to each one, using the `rec_bootstrap` cross-validation specifications. The results of each of these runs is stored under the respective model row in a new updated `workflow_set` object. 
 
 Note that the resulting object shows that the `option` and `result` columns have been updated. 
 
@@ -948,9 +965,9 @@ wfs_results |>
 Also by default, `rank_results()` ranks **all** candidate sets; that’s why the same model can show up multiple times in the output. An option, called `select_best`, can be used to rank the models using their best tuning parameter combination.
 
 
-Imagine we had many combinations of model specs and recipes with resampling. The `autoplot()` method plots the rankings; it also has a `select_best` argument. The plot in Figure \@ref(fig:wfs_results_plot) visualizes the best results for each model and is generated with:
+Imagine we had many combinations of model specs and recipes with resampling. The `autoplot()` method plots the rankings; it also has a `select_best` argument. The plot in Figure \@ref(fig:wfsresults) visualizes the best results for each model and is generated with:
 
-```{r wfs_results_plot, fig.cap="*Model selection after resampling based on AUC performance*", fig.width=5, fig.asp=.5}
+```{r wfsresults, fig.cap="*Model selection after resampling based on AUC performance*", fig.width=5, fig.asp=.5}
 autoplot(
   wfs_results,
   rank_metric = "roc_auc",  # <- how to order models
@@ -985,7 +1002,7 @@ There are also methods for `collect_predictions()` and `collect_metrics()`. The 
 The process of choosing the final model and fitting it on the training set is straightforward. The first step is to pick a workflow to finalize. The following code extracts the best model from the set, updates the parameters with the numerically best settings, and fits to the training set:
 
 ```{r}
-best_fit <- 
+wfs_fit <- 
   wfs_results |> 
   # Extract the workflow from the set
   extract_workflow("recNAomit_rand_forest") |> 
@@ -997,7 +1014,7 @@ best_fit <-
   ) |> 
   fit(df1_train)
 
-best_fit
+wfs_fit
 ```
 
 \
@@ -1024,20 +1041,28 @@ tree2_fit
 Next we will apply the extracted models to the test data and include the results in the comparison datasets.
 
 ```{r}
-best_test <- augment(best_fit, new_data=df1_test)
+wfs_test <- augment(wfs_fit, new_data=df1_test)
 
-best_roc_curve <- best_test |> 
+wfs_roc_curve <- wfs_test |> 
   roc_curve(truth=Survived, .pred_TRUE)
 
-best_conf_matrix <- conf_mat(best_test, truth=Survived, estimate=.pred_class) |> 
-  tidy() |> 
-  tidyConfMat() |> 
-  mutate(model="RndFor2")
+df3_conf_matrix <- 
+  bind_rows(
+    df3_conf_matrix,
+    conf_mat(wfs_test, truth=Survived, estimate=.pred_class) |> 
+      tidy() |> 
+      tidyConfMat() |> 
+      mutate(model="RndFor2")
+  )
 
-best_metrics <- best_test |> 
-  class_and_probs_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
-  mutate(.estimate = round(.estimate, 4)) |> 
-  mutate(model="RndFor2")
+df4_performance <- 
+  bind_rows(
+    df4_performance,
+    wfs_test |> 
+      performance_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
+      mutate(.estimate = round(.estimate, 4)) |> 
+      mutate(model="RndFor2")
+  )
 ```
 
 
@@ -1049,15 +1074,23 @@ tree2_test <- augment(tree2_fit, new_data=df1_test)
 tree2_roc_curve <- tree2_test |> 
   roc_curve(truth=Survived, .pred_TRUE)
 
-tree2_conf_matrix <- conf_mat(tree2_test, truth=Survived, estimate=.pred_class) |> 
-  tidy() |> 
-  tidyConfMat() |> 
-  mutate(model="DecTree2")
+df3_conf_matrix <- 
+  bind_rows(
+    df3_conf_matrix,
+    conf_mat(tree2_test, truth=Survived, estimate=.pred_class) |> 
+      tidy() |> 
+      tidyConfMat() |> 
+      mutate(model="DecTree2")
+  )
 
-tree2_metrics <- tree2_test |> 
-  class_and_probs_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
-  mutate(.estimate = round(.estimate, 4)) |> 
-  mutate(model="DecTree2")
+df4_performance <- 
+  bind_rows(
+    df4_performance,
+    tree2_test |> 
+      performance_metrics(truth=Survived, estimate=.pred_class, .pred_TRUE) |> 
+      mutate(.estimate = round(.estimate, 4)) |> 
+      mutate(model="DecTree2")
+  )
 ```
 
 \
@@ -1065,16 +1098,6 @@ tree2_metrics <- tree2_test |>
 # Overall Results
 
 \
-
-
-```{r}
-df3_conf_matrix <-  
-  bind_rows(
-    df3_conf_matrix,
-    best_conf_matrix,
-    tree2_conf_matrix
-  )
-```
 
 
 ```{r fig.width=6, fig.height=2}
@@ -1085,16 +1108,16 @@ plotConfMat(df3_conf_matrix)
 \
 
 ```{r fig.width=6, fig.height=6}
-p4 <- autoplot(best_roc_curve) +
+p4 <- autoplot(wfs_roc_curve) +
   scale_x_continuous(expand=expansion(mult=c(0,0))) +
   scale_y_continuous(expand=expansion(mult=c(0,0))) +
-  labs(title=glue::glue("RF resampled - AUC: {filter(best_metrics, .metric=='roc_auc')$.estimate}"), 
+  labs(title=glue::glue("RF resampled - AUC: {filter(df4_performance, .metric=='roc_auc', model=='RndFor2')$.estimate}"), 
        x="False Positive Rate (specificity)", y="True Positive Rate (sensitivity)")
 
 p3 <- autoplot(tree2_roc_curve) +
   scale_x_continuous(expand=expansion(mult=c(0,0))) +
   scale_y_continuous(expand=expansion(mult=c(0,0))) +
-  labs(title=glue::glue("DT resampled - AUC: {filter(tree2_metrics, .metric=='roc_auc')$.estimate}"), 
+  labs(title=glue::glue("DT resampled - AUC: {filter(df4_performance, .metric=='roc_auc', model=='DecTree2')$.estimate}"), 
        x="False Positive Rate (specificity)", y="True Positive Rate (sensitivity)")
 
 
@@ -1105,18 +1128,9 @@ p1 + p2 + p3 + p4 &
 
 \
 
-```{r}
-df4_metrics <- 
-  bind_rows(
-    df4_metrics,
-    best_metrics,
-    tree2_metrics
-  )
-```
-
 
 ```{r}
-df4_metrics |> 
+df4_performance |> 
   ggplot(aes(x=model, y=.estimate, group=.metric)) +
   geom_line(aes(color=.metric), linewidth=.7) + geom_point(aes(color=.metric)) +
   geom_text(aes(label=scales::number(.estimate, accuracy=.01)), vjust=-1, size=3) +
@@ -1132,14 +1146,14 @@ df4_metrics |>
 \
 
 ```{r fig.width=6, fig.asp=.5}
-df_features <- rbind(
+df4_features <- rbind(
   rf_res_features |> mutate(model="RndFor0"),
-  ranger::importance(extract_fit_engine(best_fit)) |> tidy() |> 
+  ranger::importance(extract_fit_engine(wfs_fit)) |> tidy() |> 
     arrange(desc(x)) |> 
     mutate(model="RndFor2")
 )
 
-df_features |> 
+df4_features |> 
   mutate(names = fct_reorder(names, x), .by=model) |>
   ggplot(aes(x=x, y=names)) +
   geom_col(fill="cadetblue") +
@@ -1153,9 +1167,14 @@ df_features |>
 
 \
 
+***
+
 \
 
 # References {#refs}
+
+\
+Davison, A, and D Hinkley. 1997. [*Bootstrap Methods and Their Application*]{.underline}. Vol. 1. Cambridge university press.
 
 \
 Kuhn, M. e Johnson, K. 2013. [*Applied Predictive Modeling*]{.underline}. Springer. ISBN 978-1-4614-6848-6. [[online](https://link.springer.com/book/10.1007/978-1-4614-6849-3){#kuhn2013}]
